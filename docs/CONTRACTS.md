@@ -228,14 +228,18 @@ parameters from the caller, they never read a wall clock of their own.
 
 ## What infrastructure needs to provide
 
-- **A hard per-experiment timeout**, if any candidate config's fit time is a
-  risk — run `training.run_experiment` (or a thin wrapper around it) in a
-  subprocess with `subprocess.run(..., timeout=...)` or equivalent.
+- **A hard per-experiment timeout** — the LLM-agent teammate's
+  `agent.executor.SubprocessExecutor` (see `docs/AGENT_CONTRACT.md` in their
+  branch) already runs every `ml_core` call in its own process and kills it
+  on timeout. Infra doesn't need to build this again; only swap in a
+  different `Executor` if that behavior doesn't fit.
 - **The overall 3-hour deadline**, translated into `time_budget_s` values
-  passed into `ExperimentConfig` and into when `write_fallback_submission`
-  gets called (as early as possible) and when the loop stops trying new
-  configs and calls `refit_and_predict` with whatever `experiment_log.select_best(...)`
-  currently returns.
+  passed into `ExperimentConfig` (or, once wired to the agent, into
+  `run_research(task_md, deadline_ts=...)`'s absolute deadline — the agent
+  never reads the platform clock itself) and into when
+  `write_fallback_submission` gets called (as early as possible) and when
+  the loop stops trying new configs and calls `refit_and_predict` with
+  whatever `experiment_log.select_best(...)` currently returns.
 - **CPU/thread budgeting** across whatever else runs concurrently — `n_jobs`
   on `ExperimentConfig` is passed straight through to the underlying
   estimator (`-1` by default, meaning "let the library decide", normally all
@@ -243,6 +247,46 @@ parameters from the caller, they never read a wall clock of their own.
 - A decision on where `experiments_dir`/validation `out_dir` live inside the
   task's working directory (relative paths are resolved from the task.md's
   directory per the platform's own convention).
+
+### ZIP packaging — flat layout, confirmed by the organizers' own instructions
+
+This is the one infra task with no existing implementation and a real risk
+of silently scoring 0 if missed. From the organizers' own upload
+instructions (not just the case PDF, which only says solution.py must be at
+the archive root and *can* import other modules — it doesn't spell out the
+packaging constraint below):
+
+> ZIP: все файлы в корне архива, без папок. Копируются только корневые
+> `.py` и `requirements.txt`; вложенные папки и прочие файлы не
+> копируются → модуль из подпапки будет недоступен → можно получить 0.
+
+In translation: the platform's unzip step only takes root-level `.py` files
+and `requirements.txt` — any file inside a folder (`ml_core/contracts.py`,
+`agent/research.py`, …) is silently dropped. Both `ml_core/` and `agent/`
+are real Python packages (subfolders, `__init__.py`, dotted imports like
+`from ml_core.contracts import TaskSpec`), so **zipping the repo as-is will
+not work** — this needs an actual build step, not just `zip -r`:
+
+1. Copy every file from `ml_core/*.py` and `agent/*.py` to the archive root,
+   renamed to avoid collisions (e.g. `ml_core/contracts.py` →
+   `ml_core_contracts.py`, `agent/research.py` → `agent_research.py`).
+2. Rewrite every `from ml_core.xxx import ...` / `from agent.xxx import ...`
+   (and `import ml_core.xxx`) across all copied files to the new flat module
+   names.
+3. The agent's `SubprocessExecutor` launches its worker as
+   `python -m agent._worker` — this is a package-relative invocation and
+   **will break** once `agent/` stops being a package. It needs rewriting to
+   invoke the flattened worker file directly (e.g. `python agent__worker.py`
+   with its own imports fixed by the same rewrite step), or `SubprocessExecutor`
+   needs a flat-layout-aware code path. Same for the feature-code sandbox,
+   which locates `_feature_sandbox_runner.py` as a sibling file via
+   `Path(__file__).with_name(...)` — this keeps working as long as the build
+   step puts both flattened files in the same (root) directory, which it
+   will, but it's worth a deliberate check, not an assumption.
+4. Verify by actually doing it: unzip the built archive into an empty
+   directory with nothing but the task's data files next to it, and run
+   `python3 solution.py task.md` from there — not just inspecting the zip's
+   file listing.
 
 ## What the LLM agent needs to provide
 
