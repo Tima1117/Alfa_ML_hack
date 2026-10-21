@@ -54,6 +54,38 @@ def test_from_env_returns_none_without_configuration(monkeypatch):
     assert LLMClient.from_env() is None
 
 
+def test_from_env_falls_back_to_defaults_on_malformed_numeric_env_vars(monkeypatch):
+    """Same lesson as the child_main()/os.sched_setaffinity incident (docs/INFRASTRUCTURE.md):
+    from_env() runs before any submission.csv gets written, so it must never raise — a bad
+    AGENT_LLM_TEMPERATURE/AGENT_LLM_TIMEOUT_S must degrade to the default value, not crash the
+    whole run before anything exists. (_env_float itself already swallows the ValueError; this
+    confirms from_env() actually produces a working client through it, not just that the helper
+    in isolation doesn't raise.)"""
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("OPENAI_MODEL", "m")
+    monkeypatch.delenv("AGENT_DISABLE_LLM", raising=False)
+    monkeypatch.setenv("AGENT_LLM_TEMPERATURE", "not-a-number")
+    monkeypatch.setenv("AGENT_LLM_TIMEOUT_S", "also-not-a-number")
+    client = LLMClient.from_env()
+    assert client is not None and client.model == "m"
+
+
+def test_from_env_returns_none_if_construction_unexpectedly_fails(monkeypatch):
+    """The outer try/except is the second line of defense, for anything _env_float/_env_int
+    can't catch (e.g. a future change to openai_transport that raises for an unrelated reason)."""
+    import agent.llm as llm_module
+
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("OPENAI_MODEL", "m")
+    monkeypatch.delenv("AGENT_DISABLE_LLM", raising=False)
+
+    def boom(*a, **k):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(llm_module, "openai_transport", boom)
+    assert LLMClient.from_env() is None
+
+
 def test_budget_exceeded_disables_the_llm_after_one_call():
     calls = []
 

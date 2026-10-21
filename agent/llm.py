@@ -73,6 +73,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
 class LLMClient:
     def __init__(
         self,
@@ -94,25 +101,35 @@ class LLMClient:
 
     @classmethod
     def from_env(cls) -> "LLMClient | None":
-        """None when the LLM is not configured (or AGENT_DISABLE_LLM=1)."""
+        """None when the LLM is not configured (or AGENT_DISABLE_LLM=1) — and also, defensively,
+        on any unexpected construction error. This runs inside run_research()'s outer try, before
+        researcher.prepare() ever gets to write the fallback submission.csv — a malformed env var
+        (e.g. AGENT_LLM_TEMPERATURE set to something float() can't parse) must degrade to "no LLM"
+        rather than take the whole run down before any file exists. Same lesson as the real
+        child_main()/os.sched_setaffinity incident (see docs/INFRASTRUCTURE.md), applied here
+        pre-emptively rather than after a second one.
+        """
         if os.environ.get("AGENT_DISABLE_LLM", "").strip() in ("1", "true", "yes"):
             return None
         model = os.environ.get("OPENAI_MODEL")
         if not model or not os.environ.get("OPENAI_API_KEY"):
             return None
-        return cls(
-            openai_transport(
-                model,
-                temperature=float(os.environ.get("AGENT_LLM_TEMPERATURE", "0.4")),
-                max_tokens=_env_int("AGENT_LLM_MAX_OUTPUT_TOKENS", 6144),
-                timeout_s=float(os.environ.get("AGENT_LLM_TIMEOUT_S", "180")),
-                reasoning_tokens=_env_int("AGENT_LLM_REASONING_TOKENS", 3000),
-                no_think=os.environ.get("AGENT_LLM_NO_THINK", "").strip() in ("1", "true", "yes"),
-            ),
-            model=model,
-            max_calls=_env_int("AGENT_LLM_MAX_CALLS", 40),
-            max_total_tokens=_env_int("AGENT_LLM_MAX_TOKENS", 400_000),
-        )
+        try:
+            return cls(
+                openai_transport(
+                    model,
+                    temperature=_env_float("AGENT_LLM_TEMPERATURE", 0.4),
+                    max_tokens=_env_int("AGENT_LLM_MAX_OUTPUT_TOKENS", 6144),
+                    timeout_s=_env_float("AGENT_LLM_TIMEOUT_S", 180.0),
+                    reasoning_tokens=_env_int("AGENT_LLM_REASONING_TOKENS", 3000),
+                    no_think=os.environ.get("AGENT_LLM_NO_THINK", "").strip() in ("1", "true", "yes"),
+                ),
+                model=model,
+                max_calls=_env_int("AGENT_LLM_MAX_CALLS", 40),
+                max_total_tokens=_env_int("AGENT_LLM_MAX_TOKENS", 400_000),
+            )
+        except Exception:
+            return None
 
     @property
     def available(self) -> bool:
