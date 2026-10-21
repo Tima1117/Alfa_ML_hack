@@ -32,3 +32,7 @@ class SubmissionFormatError(MlCoreError):
 
 class UnknownMetricError(MlCoreError):
     """Raised when TaskSpec.metric_name is not in the metric registry."""
+
+
+class FeatureStepError(MlCoreError):
+    """Raised when ExperimentConfig.feature_steps names an unknown/broken step."""

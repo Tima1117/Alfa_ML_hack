@@ -69,10 +69,10 @@ pred_result = prediction.refit_and_predict(task_spec, config, data_profile, trai
    rows total — an automatic dedup could silently delete exactly the signal
    that matters most. If your agent decides duplicates (or outliers, or
    anything else) should be removed, that has to be an explicit, logged
-   hypothesis your agent makes — e.g. a preprocessing/feature step you add
-   (see `ExperimentConfig.feature_steps`, currently just a placeholder list —
-   no dedup/outlier-removal step is implemented yet), never something that
-   happens for you inside `profile_data` or `run_experiment`.
+   hypothesis your agent makes — e.g. a feature step (see
+   `ExperimentConfig.feature_steps` below; no dedup/outlier-removal step is
+   implemented, since dropping rows would break the fold row-positions), never
+   something that happens for you inside `profile_data` or `run_experiment`.
 
 3. **`validation.create_validation(...) -> ValidationPlan`** — persists fold
    row-positions to an `.npz` file plus a fingerprint of the train file used.
@@ -190,6 +190,27 @@ wrapped here on purpose — see "Next improvements" below.
   agent-generated config. `model_registry.requires_linear_mode(name)` is the
   check you can run yourself before even calling `run_experiment`.
 
+### `feature_steps` (`ml_core/feature_steps.py`)
+
+Applied **inside** the CV loop (fit on the training fold only, then
+transform the validation fold / test), to feature columns only — steps never
+see the target or the id. The validation split is untouched, so results
+with and without steps share a `validation_id` and are directly comparable.
+
+| step | what it does |
+|---|---|
+| `drop:<column>` | drop one feature column |
+| `missing_indicators` | `<col>__isna` flags for columns with NaN in the training fold (max 50) |
+| `count_encode` | `<col>__count` = category frequency in the training fold (unseen → 0) |
+| `row_nan_count` | `__row_nan_count` per row |
+| `py:<path>` | generated module with a stateless `make_features(df) -> df` (same rows, same order; may add/drop columns; ±inf become NaN) |
+
+New columns are typed by dtype (numeric → numeric, otherwise categorical).
+An unknown step or a broken `make_features` comes back as
+`status="failed"` with the reason, never an exception. `py:` code runs
+in-process: checking it is safe and deterministic is the caller's job
+(`agent/features.py` does that in a sandboxed subprocess first).
+
 ### Time budget — what's enforced and what isn't
 
 `ExperimentConfig.time_budget_s` is checked **once per CV fold**, not inside
@@ -248,45 +269,37 @@ parameters from the caller, they never read a wall clock of their own.
   task's working directory (relative paths are resolved from the task.md's
   directory per the platform's own convention).
 
-### ZIP packaging — flat layout, confirmed by the organizers' own instructions
+### ZIP packaging — flat layout, confirmed by the organizers' own instructions, now implemented
 
-This is the one infra task with no existing implementation and a real risk
-of silently scoring 0 if missed. From the organizers' own upload
-instructions (not just the case PDF, which only says solution.py must be at
-the archive root and *can* import other modules — it doesn't spell out the
-packaging constraint below):
+From the organizers' own upload instructions (not just the case PDF, which
+only says solution.py must be at the archive root and *can* import other
+modules — it doesn't spell out the packaging constraint below):
 
 > ZIP: все файлы в корне архива, без папок. Копируются только корневые
 > `.py` и `requirements.txt`; вложенные папки и прочие файлы не
 > копируются → модуль из подпапки будет недоступен → можно получить 0.
 
 In translation: the platform's unzip step only takes root-level `.py` files
-and `requirements.txt` — any file inside a folder (`ml_core/contracts.py`,
-`agent/research.py`, …) is silently dropped. Both `ml_core/` and `agent/`
-are real Python packages (subfolders, `__init__.py`, dotted imports like
-`from ml_core.contracts import TaskSpec`), so **zipping the repo as-is will
-not work** — this needs an actual build step, not just `zip -r`:
+and `requirements.txt` — any file inside a folder is silently dropped. Both
+`ml_core/` and `agent/` are real Python packages, so zipping the repo as-is
+would not work.
 
-1. Copy every file from `ml_core/*.py` and `agent/*.py` to the archive root,
-   renamed to avoid collisions (e.g. `ml_core/contracts.py` →
-   `ml_core_contracts.py`, `agent/research.py` → `agent_research.py`).
-2. Rewrite every `from ml_core.xxx import ...` / `from agent.xxx import ...`
-   (and `import ml_core.xxx`) across all copied files to the new flat module
-   names.
-3. The agent's `SubprocessExecutor` launches its worker as
-   `python -m agent._worker` — this is a package-relative invocation and
-   **will break** once `agent/` stops being a package. It needs rewriting to
-   invoke the flattened worker file directly (e.g. `python agent__worker.py`
-   with its own imports fixed by the same rewrite step), or `SubprocessExecutor`
-   needs a flat-layout-aware code path. Same for the feature-code sandbox,
-   which locates `_feature_sandbox_runner.py` as a sibling file via
-   `Path(__file__).with_name(...)` — this keeps working as long as the build
-   step puts both flattened files in the same (root) directory, which it
-   will, but it's worth a deliberate check, not an assumption.
-4. Verify by actually doing it: unzip the built archive into an empty
-   directory with nothing but the task's data files next to it, and run
-   `python3 solution.py task.md` from there — not just inspecting the zip's
-   file listing.
+**Implemented** by the infrastructure teammate — not by renaming/rewriting
+every module import (the approach this section used to suggest), but by
+bundling the untouched source of every file in `ml_core/*.py` and
+`agent/*.py` as plain Python string literals inside one root file
+(`bundle_sources.py`, with a SHA-256 per file checked before use). The
+actual submission ZIP has exactly three root files: `solution.py`,
+`bundle_sources.py`, `requirements.txt`. At startup, `solution.py` writes
+those strings back out as real files under the original `ml_core/`/`agent/`
+package layout in a fresh temp directory inside the task's working
+directory, then runs from there — so every existing import, `python -m
+agent._worker`, and the feature-sandbox's sibling-file lookup keep working
+completely unmodified. Build it with `python3 scripts/build_submission.py
+<output.zip>`; verify the built archive (including a mode that imitates the
+platform's root-files-only copy) with `scripts/verify_submission.py`. Full
+details, the time/memory watchdog around the agent process, and the
+independent final CSV check: `docs/INFRASTRUCTURE.md`.
 
 ## What the LLM agent needs to provide
 
@@ -310,10 +323,7 @@ not work** — this needs an actual build step, not just `zip -r`:
 1. **Out-of-fold target encoding** for the high-cardinality categoricals
    (`category_encoders`, already in `requirements.txt`) — likely upside on
    `facility_type` (60 categories) and `proto` (133 categories).
-2. **Feature engineering step registry** (`ExperimentConfig.feature_steps` is
-   already a field, currently unused) — generic, reusable transformers
-   (e.g. "drop columns with >X% missing", "add missing-value indicators"),
-   not dataset-specific recipes.
+2. ~~Feature engineering step registry~~ — done, see `feature_steps` above.
 3. **A thin `autogluon`/`flaml` adapter model**, run through the *same*
    `run_experiment` contract (so its result is directly comparable to the
    hand-rolled candidates) rather than letting it do its own internal

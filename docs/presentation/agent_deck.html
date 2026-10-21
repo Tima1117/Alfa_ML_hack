@@ -1,0 +1,409 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AutoResearch-агент</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: stacked 16:9 "lab notebook" slides on a cool paper ground; amber = LLM (planning), teal = ml_core (measuring). */
+:root {
+  --bg: #eef1f4;
+  --paper: #fbfcfd;
+  --ink: #15202b;
+  --muted: #5a6876;
+  --line: #d4dbe2;
+  --llm: #8c5309;
+  --llm-soft: #f6ead8;
+  --core: #0d7565;
+  --core-soft: #dcefeb;
+  --warn: #b3392f;
+  --font-display: "Unbounded", "Arial Black", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1318; --paper: #141c23; --ink: #e4eaef; --muted: #93a2b0; --line: #2a3742;
+    --llm: #e2a453; --llm-soft: #33281a; --core: #45c4ad; --core-soft: #15302b; --warn: #ef7d72;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d1318; --paper: #141c23; --ink: #e4eaef; --muted: #93a2b0; --line: #2a3742;
+  --llm: #e2a453; --llm-soft: #33281a; --core: #45c4ad; --core-soft: #15302b; --warn: #ef7d72;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-snap-type: y proximity; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 24px 64px;
+}
+.deck { display: grid; gap: 28px; max-width: 1180px; margin: 0 auto; }
+.slide {
+  scroll-snap-align: start; background: var(--paper); color: var(--ink); border: 1px solid var(--line); border-radius: 6px;
+  min-height: min(663px, calc((100vw - 32px) * 0.5625)); padding: clamp(20px, 4vw, 48px);
+  display: flex; flex-direction: column; gap: 22px; position: relative; min-width: 0;
+}
+.slide:focus-visible { outline: 2px solid var(--core); outline-offset: 3px; }
+.eyebrow {
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+  display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+}
+h1, h2 { font-family: var(--font-display); font-weight: 600; text-wrap: balance; margin: 0; letter-spacing: -.01em; }
+h1 { font-size: clamp(30px, 5vw, 56px); line-height: 1.08; }
+h2 { font-size: clamp(22px, 2.8vw, 32px); line-height: 1.15; }
+h3 { font-size: 16px; margin: 0 0 6px; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+.lead { font-size: clamp(17px, 1.6vw, 20px); color: var(--muted); max-width: 60ch; }
+.mono, code { font-family: var(--font-mono); font-size: .9em; }
+code { background: var(--bg); padding: 2px 6px; border-radius: 3px; }
+.llm { color: var(--llm); } .core { color: var(--core); }
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.grid > * { min-width: 0; }
+.cell { border-top: 2px solid var(--line); padding-top: 12px; }
+.cell.l { border-top-color: var(--llm); } .cell.c { border-top-color: var(--core); }
+.cell p { color: var(--muted); font-size: 15px; }
+ul.tight { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+ul.tight li { max-width: 64ch; }
+.facts { display: flex; flex-wrap: wrap; gap: 10px; margin-top: auto; }
+.fact { font-family: var(--font-mono); font-size: 13px; border: 1px solid var(--line); border-radius: 3px; padding: 6px 10px; }
+.fact b { font-weight: 500; color: var(--ink); }
+.foot { margin-top: auto; font-size: 13px; color: var(--muted); }
+.title-slide { justify-content: center; }
+.title-slide .lead { margin-top: 4px; }
+.legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; background: var(--c); }
+
+/* flow diagrams */
+.scroll { overflow-x: auto; }
+.flow { display: flex; align-items: stretch; gap: 0; min-width: 0; flex-wrap: wrap; row-gap: 14px; }
+.node {
+  border: 1.5px solid var(--line); border-radius: 4px; padding: 10px 12px; background: var(--paper);
+  flex: 1 1 150px; min-width: 0; display: flex; flex-direction: column; gap: 3px;
+}
+.node .k { font-family: var(--font-mono); font-size: 11px; color: var(--muted); letter-spacing: .04em; }
+.node b { font-size: 15px; font-weight: 600; }
+.node small { color: var(--muted); font-size: 13px; line-height: 1.35; }
+.node.l { border-color: var(--llm); background: var(--llm-soft); }
+.node.c { border-color: var(--core); background: var(--core-soft); }
+.node.out { border-style: dashed; }
+.arrow { flex: 0 0 28px; display: grid; place-items: center; color: var(--muted); font-family: var(--font-mono); }
+.arrow::before { content: "→"; font-size: 18px; }
+.arch { display: grid; gap: 14px; grid-template-columns: 1fr; }
+.arch .row { display: flex; flex-wrap: wrap; gap: 0; row-gap: 12px; }
+.arch .vlink { font-family: var(--font-mono); font-size: 12px; color: var(--llm); padding-left: 14px; border-left: 2px dashed var(--llm); margin-left: 40px; }
+
+/* timeline */
+.timeline { display: flex; width: 100%; min-width: 560px; height: 44px; border-radius: 4px; overflow: hidden; border: 1px solid var(--line); }
+.timeline div { display: grid; place-items: center; font-size: 12px; font-family: var(--font-mono); white-space: nowrap; overflow: hidden; padding: 0 10px; }
+.t-prep { background: var(--line); }
+.t-seed { background: var(--core-soft); color: var(--core); }
+.t-llm { background: var(--llm-soft); color: var(--llm); }
+.t-play { background: var(--core); color: var(--paper); }
+.t-ref { background: var(--ink); color: var(--paper); }
+.phases { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.phase { font-size: 14px; color: var(--muted); }
+.phase b { color: var(--ink); display: block; font-size: 15px; }
+
+/* loop */
+.loop { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); counter-reset: step; }
+.loop .node { counter-increment: step; }
+.loop .node .k::before { content: counter(step) " · "; }
+pre.json {
+  margin: 0; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.5; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 4px; padding: 14px; overflow-x: auto; white-space: pre; color: var(--ink);
+}
+pre.json .s { color: var(--llm); } pre.json .n { color: var(--core); }
+
+/* tables & bars */
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 15px; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { white-space: nowrap; }
+th { font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 500; }
+td.best { font-weight: 600; color: var(--core); }
+.bars { display: grid; gap: 7px; }
+.bar { display: grid; grid-template-columns: minmax(120px, 230px) 1fr 56px; gap: 10px; align-items: center; font-size: 14px; }
+.bar > span:first-child { color: var(--muted); }
+.bar .track { height: 14px; background: var(--bg); border-radius: 2px; position: relative; }
+.bar .fill { position: absolute; inset: 0 auto 0 0; border-radius: 2px; background: var(--c, var(--core)); }
+.bar .v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+.axis { display: grid; grid-template-columns: minmax(120px, 230px) 1fr 56px; gap: 10px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.axis div { display: flex; justify-content: space-between; }
+.big { font-family: var(--font-display); font-size: clamp(26px, 3.4vw, 40px); font-weight: 500; font-variant-numeric: tabular-nums; }
+.stat p { color: var(--muted); font-size: 14px; }
+.tag { display: inline-block; font-family: var(--font-mono); font-size: 11px; padding: 3px 8px; border-radius: 3px; border: 1px solid currentColor; }
+.tag.ok { color: var(--core); } .tag.wait { color: var(--llm); } .tag.no { color: var(--warn); }
+
+.nav {
+  position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  display: flex; gap: 6px; align-items: center; background: var(--paper); border: 1px solid var(--line); border-radius: 4px;
+  padding: 4px; font-family: var(--font-mono); font-size: 12px; z-index: 5;
+}
+.nav button { font: inherit; background: none; border: 0; color: var(--ink); cursor: pointer; padding: 4px 8px; border-radius: 3px; }
+.nav button:hover, .nav button:focus-visible { background: var(--bg); outline: none; }
+.nav span { color: var(--muted); min-width: 46px; text-align: center; }
+
+@media (max-width: 640px) {
+  .slide { min-height: 0; }
+  .arrow { flex-basis: 100%; height: 18px; }
+  .arrow::before { content: "↓"; }
+  .bar, .axis { grid-template-columns: 110px 1fr 48px; }
+  .nav { display: none; }
+  table { min-width: 520px; }
+}
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+<main class="deck" id="deck">
+
+  <section class="slide title-slide" tabindex="-1" aria-label="Слайд 1">
+    <div class="eyebrow"><span>Альфа Хак AutoML · часть «LLM-агент»</span><span>форк ThrPHP/Alfa_ML_hack_D</span></div>
+    <h1>AutoResearch-агент:<br>от <span class="core">task.md</span> до <span class="llm">submission.csv</span> без человека</h1>
+    <p class="lead">Qwen предлагает гипотезы, ml_core честно их проверяет на одной и той же валидации, лучший результат уходит в сабмит. Один код для любой табличной задачи.</p>
+    <div class="legend"><span style="--c: var(--llm)">LLM: планирует</span><span style="--c: var(--core)">ml_core: считает и проверяет</span></div>
+    <div class="facts">
+      <div class="fact"><b>3 ч</b> на задачу</div>
+      <div class="fact"><b>8 CPU</b> / 32 GB, без интернета</div>
+      <div class="fact"><b>qwen/qwen3.8-27b</b> через прокси</div>
+      <div class="fact"><b>600 ₽</b> в сутки на команду</div>
+    </div>
+  </section>
+
+  <section class="slide" tabindex="-1" aria-label="Слайд 2">
+    <div class="eyebrow"><span>Задача</span><span>02</span></div>
+    <h2>Что дают и за что ставят баллы</h2>
+    <div class="grid">
+      <div class="cell"><h3>На входе</h3><p><code>task.md</code> с описанием и метрикой, <code>train.csv</code>, <code>test.csv</code>, <code>data_dictionary.csv</code>, <code>sample_submission.csv</code>.</p></div>
+      <div class="cell"><h3>На выходе</h3><p><code>submission.csv</code> рядом с <code>task.md</code>. Через 3 ч процесс убивают и оценивают то, что уже записано.</p></div>
+      <div class="cell"><h3>Score</h3><p>Регрессия: <span class="mono">100·(1 − RMSE/B)</span>. Классификация: <span class="mono">100·(F1 − B)/(1 − B)</span>. B — бейзлайн организаторов; хуже бейзлайна — 0.</p></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>public-задача</th><th>строк train / test</th><th>метрика</th><th>подвох</th></tr></thead>
+        <tbody>
+          <tr><td>энергопотребление зданий, <code>site_eui</code></td><td>53 308 / 22 449</td><td>RMSE ↓</td><td>test — только 6-й год (<code>Year_Factor</code>)</td></tr>
+          <tr><td>типы сетевых атак, <code>attack_cat</code></td><td>87 670 / 41 166</td><td>Macro F1 ↑</td><td>10 классов, Worms — 65 строк</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="foot">Private: две новые задачи с неизвестными метриками, поэтому ничего не настраиваем вручную под конкретный датасет.</p>
+  </section>
+
+  <section class="slide" tabindex="-1" aria-label="Слайд 3">
+    <div class="eyebrow"><span>Главное решение</span><span>03</span></div>
+    <h2>Гибрид: LLM пишет план в строгом JSON, исполняет его ml_core</h2>
+    <div class="grid">
+      <div class="cell l"><h3 class="llm">Что делает LLM</h3>
+        <ul class="tight"><li>понимает задачу: метрика, колонки времени и групп, что выбросить</li><li>предлагает до 3 гипотез за раунд: модель, параметры, предобработка, признаки</li><li>пишет код признаков <code>make_features(df)</code></li><li>читает историю экспериментов и решает, что пробовать дальше</li></ul></div>
+      <div class="cell c"><h3 class="core">Что делает код</h3>
+        <ul class="tight"><li>одна фиксированная валидация для всех гипотез</li><li>проверяет и ограничивает параметры, отбрасывает повторы</li><li>прогоняет код признаков в песочнице</li><li>следит за временем, обучает финальную модель, пишет сабмит</li></ul></div>
+      <div class="cell"><h3>Почему не «LLM пишет весь пайплайн»</h3>
+        <ul class="tight"><li>27B-модель ненадёжна как свободный кодогенератор</li><li>честную валидацию легко сломать утечкой</li><li>токены платные и общие на команду</li><li>без LLM агент тоже работает: playbook и local search</li></ul></div>
+    </div>
+  </section>
+
+  <section class="slide" tabindex="-1" aria-label="Слайд 4">
+    <div class="eyebrow"><span>Архитектура</span><span>04</span></div>
+    <h2>Кто кого вызывает</h2>
+    <div class="arch">
+      <div class="row flow">
+        <div class="node out"><span class="k">вход</span><b>task.md + csv</b><small>файлы ищет <code>task_files.py</code></small></div>
+        <div class="arrow" aria-hidden="true"></div>
+        <div class="node"><span class="k">agent/research.py</span><b>run_research</b><small>главный цикл, время, отчёт</small></div>
+        <div class="arrow" aria-hidden="true"></div>
+        <div class="node"><span class="k">agent/executor.py</span><b>SubprocessExecutor</b><small>отдельный процесс, жёсткий таймаут 30 мин</small></div>
+        <div class="arrow" aria-hidden="true"></div>
+        <div class="node c"><span class="k">ml_core/</span><b>профиль · валидация · обучение · предсказание</b><small>зона Тимы, никогда не падает</small></div>
+        <div class="arrow" aria-hidden="true"></div>
+        <div class="node out"><span class="k">выход</span><b>submission.csv</b><small>+ report.md, experiments.jsonl</small></div>
+      </div>
+      <div class="vlink">↕ промпт: профиль данных + история + лучший конфиг &nbsp;·&nbsp; ответ: JSON по схеме pydantic</div>
+      <div class="row flow">
+        <div class="node l"><span class="k">agent/llm.py</span><b>LLMClient</b><small>поток, JSON + 1 раунд починки, бюджет, ошибки прокси</small></div>
+        <div class="arrow" aria-hidden="true"></div>
+        <div class="node l"><span class="k">прокси организаторов</span><b>Qwen 27B</b><small>OpenAI-совместимый API, ключ — только из env</small></div>
+        <div class="arrow" aria-hidden="true"></div>
+        <div class="node"><span class="k">agent/hypotheses.py</span><b>гипотеза → ExperimentConfig</b><small>чистка параметров, стабильный id</small></div>
+        <div class="arrow" aria-hidden="true"></div>
+        <div class="node"><span class="k">agent/features.py</span><b>песочница кода</b><small>allowlist импортов, тот же размер, без таргета</small></div>
+      </div>
+    </div>
+    <p class="foot">Интерфейс для инфраструктуры — одна функция: <code>agent.research.run_research(task_md, deadline_ts)</code>. Контракт: <code>docs/AGENT_CONTRACT.md</code>.</p>
+  </section>
+
+  <section class="slide" tabindex="-1" aria-label="Слайд 5">
+    <div class="eyebrow"><span>Один прогон</span><span>05</span></div>
+    <h2>Как агент тратит 3 часа</h2>
+    <div class="scroll"><div class="timeline" role="img" aria-label="Фазы прогона по времени">
+      <div class="t-prep" style="flex: 2">старт</div>
+      <div class="t-seed" style="flex: 6">seeds</div>
+      <div class="t-llm" style="flex: 46">раунды LLM</div>
+      <div class="t-play" style="flex: 30">playbook · local search</div>
+      <div class="t-ref" style="flex: 8">refit</div>
+    </div></div>
+    <p class="foot" style="margin-top:-12px">Пропорции примерные: LLM-фаза длится, пока даёт новые рекорды (4 раунда без рекорда — переход дальше).</p>
+    <div class="phases">
+      <div class="phase"><b>Старт, ~20 с</b>Профиль данных и сразу fallback-сабмит. Затем один вызов LLM: метрика, время, группы.</div>
+      <div class="phase"><b>Seeds</b>LightGBM и CatBoost по умолчанию, refit лучшего, настоящий сабмит уже на 1-й минуте.</div>
+      <div class="phase"><b>Раунды LLM</b>До 3 гипотез за раунд, каждая — изменение лучшего конфига. История и ошибки уходят в следующий промпт.</div>
+      <div class="phase"><b>Playbook и local search</b>Общие проверенные идеи, затем точечный подбор 1–2 гиперпараметров. Работают и без ключа.</div>
+      <div class="phase"><b>Refit</b>Чекпоинт сабмита раз в 30 мин и финальный. Резерв на refit агент калибрует по факту.</div>
+    </div>
+  </section>
+
+  <section class="slide" tabindex="-1" aria-label="Слайд 6">
+    <div class="eyebrow"><span>Цикл гипотезы</span><span>06</span></div>
+    <h2>Одна итерация AutoResearch</h2>
+    <div class="loop">
+      <div class="node l"><span class="k">промпт</span><b>Сводка данных, история, лучший конфиг</b><small>~4 тыс. токенов</small></div>
+      <div class="node l"><span class="k">Qwen</span><b>JSON: анализ + до 3 гипотез</b><small>~25 с, ~0.4 ₽</small></div>
+      <div class="node"><span class="k">проверка</span><b>Схема, чистка параметров, повторы</b><small>итерации ≤ 4000, потоки задаёт агент</small></div>
+      <div class="node"><span class="k">песочница</span><b>Код признаков от LLM</b><small>отказ с причиной → в следующий промпт</small></div>
+      <div class="node c"><span class="k">CV</span><b>Та же валидация для всех</b><small>метрика из task.md</small></div>
+      <div class="node c"><span class="k">итог</span><b>Новый рекорд → refit и сабмит</b><small>результат идёт в историю</small></div>
+    </div>
+    <pre class="json" aria-label="Реальная гипотеза Qwen из прогона на регрессии">{
+  <span class="s">"title"</span>: "LightGBM + domain features",
+  <span class="s">"kind"</span>: "features",
+  <span class="s">"rationale"</span>: "log(floor_area), building_age, annual_temp_range,
+                energy_star_missing, sin/cos направления ветра…",
+  <span class="s">"feature_code"</span>: "def make_features(df): …"
+}   <span class="n">→ песочница: +10 колонок, OK (0.3 с) → RMSE 47.53 → 42.97, новый рекорд</span></pre>
+  </section>
+
+  <section class="slide" tabindex="-1" aria-label="Слайд 7">
+    <div class="eyebrow"><span>Надёжность</span><span>07</span></div>
+    <h2>Что не даёт агенту сломать результат</h2>
+    <div class="grid">
+      <div class="cell c"><h3>Сабмит всегда есть</h3><p>Fallback на 2-й секунде, refit после seeds, чекпоинты раз в 30 мин. Запись атомарная.</p></div>
+      <div class="cell c"><h3>Метрику не переспорить</h3><p>Метрика из текста task.md важнее ответа LLM. Ответ LLM принимается, только если такая метрика есть в ml_core и подходит к типу задачи.</p></div>
+      <div class="cell c"><h3>Честная валидация</h3><p><code>time_split</code> включается, только если весь test строго позже train. Признаки обучаются внутри фолдов.</p></div>
+      <div class="cell c"><h3>Жёсткие таймауты</h3><p>Каждый эксперимент — отдельный процесс. Зависший fit убивается и не съедает 3 часа.</p></div>
+      <div class="cell l"><h3>LLM — помощник, а не опора</h3><p>Нет ключа, сбои, мусорные ответы → агент продолжает на playbook. <code>Budget has been exceeded</code> → LLM отключается сразу, без повторов.</p></div>
+      <div class="cell l"><h3>Код от LLM — в песочнице</h3><p>Только разрешённые импорты, детерминизм, те же строки и порядок, без таргета, не больше N новых колонок.</p></div>
+    </div>
+  </section>
+
+  <section class="slide" tabindex="-1" aria-label="Слайд 8">
+    <div class="eyebrow"><span>Qwen через прокси</span><span>08</span></div>
+    <h2>Что выяснилось на первых настоящих вызовах</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>что видели</th><th>причина</th><th>что сделали</th></tr></thead>
+        <tbody>
+          <tr><td><code>upstream request failed</code> на каждом раунде</td><td>прокси обрывает обычный запрос на ~30 с</td><td>ответы потоком (<code>stream=True</code>)</td></tr>
+          <tr><td>ответ без JSON, 6144 из 6144 токенов</td><td>модель тратит весь лимит на рассуждение; <code>/no_think</code> игнорирует</td><td>рассуждение ≤ 3000 токенов (<code>reasoning.max_tokens</code>), повтор — без рассуждения</td></tr>
+          <tr><td>расход растёт и при ошибках</td><td>упавшая попытка тоже оплачивается</td><td>1 повтор вместо 3, учёт <code>usage.cost</code> в отчёте</td></tr>
+          <tr><td>все эксперименты «failed in 0 s»</td><td>относительный путь и другой cwd у воркера</td><td>пути приводятся к абсолютным</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="foot">Расход по ключу команды за сутки: <code>GET /key/info</code> → <code>spend</code> из <code>max_budget = 600</code>, сброс в 03:00 МСК.</p>
+  </section>
+
+  <section class="slide" tabindex="-1" aria-label="Слайд 9">
+    <div class="eyebrow"><span>Результаты</span><span>09</span></div>
+    <h2>Регрессия: LLM нашла главный выигрыш на 2-й минуте</h2>
+    <div class="bars" role="img" aria-label="RMSE по шагам прогона, меньше — лучше, шкала от 40 до 52">
+      <div class="axis"><span></span><div><span>40</span><span>43</span><span>46</span><span>49</span><span>52</span></div><span></span></div>
+      <div class="bar"><span>seed LightGBM</span><div class="track"><div class="fill" style="width: 87.95%; --c: var(--line)"></div></div><span class="v">50.55</span></div>
+      <div class="bar"><span>лучшее у Тимы (ml_core)</span><div class="track"><div class="fill" style="width: 50.75%; --c: var(--muted)"></div></div><span class="v">46.09</span></div>
+      <div class="bar"><span>LLM: log1p таргета</span><div class="track"><div class="fill" style="width: 62.75%; --c: var(--llm)"></div></div><span class="v">47.53</span></div>
+      <div class="bar"><span>LLM: свои признаки</span><div class="track"><div class="fill" style="width: 24.75%; --c: var(--llm)"></div></div><span class="v">42.97</span></div>
+      <div class="bar"><span>агент без LLM, 15 мин</span><div class="track"><div class="fill" style="width: 24.75%; --c: var(--muted)"></div></div><span class="v">42.97</span></div>
+      <div class="bar"><span>агент с LLM, 15 мин</span><div class="track"><div class="fill" style="width: 15.5%; --c: var(--core)"></div></div><span class="v">41.86</span></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>задача</th><th>у Тимы</th><th>без LLM</th><th>с LLM</th><th>LLM, ₽</th></tr></thead>
+        <tbody>
+          <tr><td>регрессия, RMSE ↓</td><td>46.09</td><td>42.97</td><td class="best">41.86 (15 мин) · 42.15 (30 мин)</td><td>4.68 · 5.21</td></tr>
+          <tr id="cls-row"><td>мультикласс, Macro F1 ↑</td><td>0.537</td><td>0.580</td><td class="best">0.6165 (30 мин)</td><td>2.72</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="foot">Мультикласс: главный шаг сделала LLM в раунде 1 — XGBoost с <code>max_cat_threshold</code>, 0.581 → 0.616. Регрессию проверяем на одном фолде (последний год), поэтому часть выигрыша local search может быть подгонкой под этот фолд.</p>
+  </section>
+
+  <section class="slide" tabindex="-1" aria-label="Слайд 10">
+    <div class="eyebrow"><span>Стоимость</span><span>10</span></div>
+    <h2>Сколько стоит LLM</h2>
+    <div class="grid">
+      <div class="stat"><div class="big">≈0.4 ₽</div><p>один раунд гипотез (~4 тыс. токенов на вход, ~1.5 тыс. на выход, ~25 с)</p></div>
+      <div class="stat"><div class="big">15–20 ₽</div><p>одна задача за 3 ч (до 40 вызовов). Худший случай — ~70 ₽, если каждый ответ упрётся в лимит</p></div>
+      <div class="stat"><div class="big">30–40 ₽</div><p>один сабмит (2 задачи). 3 сабмита в день — примерно 100–120 ₽ из 600</p></div>
+    </div>
+    <p>Цена определяется выходом: ≈0.27 ₽ за 1000 токенов ответа вместе с рассуждением, вход в разы дешевле. Поэтому длину рассуждения ограничиваем, а промпт держим компактным, на английском.</p>
+    <p class="foot">Открытый вопрос: списываются ли с нашего ключа private-перезапуски на платформе.</p>
+  </section>
+
+  <section class="slide" tabindex="-1" aria-label="Слайд 11">
+    <div class="eyebrow"><span>Передача команде</span><span>11</span></div>
+    <h2>Когда наша часть считается готовой</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>этап</th><th>что передаём</th><th>кому</th><th>статус</th></tr></thead>
+        <tbody>
+          <tr><td>M0 — интерфейс</td><td><code>run_research(task_md, deadline_ts)</code> + пример <code>solution.py</code></td><td>инфраструктура</td><td><span class="tag ok">можно сейчас</span></td></tr>
+          <tr><td>M1 — <code>agent-v1</code></td><td>тег, отчёт о приёмке, PR в основной репозиторий</td><td>вся команда</td><td><span class="tag wait">после приёмки</span></td></tr>
+          <tr><td>M2 — первый сабмит</td><td>правки по итогам платформы</td><td>вся команда</td><td><span class="tag wait">нужен ZIP</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="tight">
+      <li>Критерии приёмки <code>agent-v1</code>: тесты зелёные; с LLM не хуже, чем без LLM, на обеих задачах; сабмит при любом сбое; ≤ 25 ₽ на задачу; укладывается в 3 ч.</li>
+      <li>Плоский ZIP и <code>solution.py</code> собирает инфраструктура. От нас — список модулей и их особенности.</li>
+    </ul>
+    <p class="foot">Подробно: <code>project_context/handoff.md</code>.</p>
+  </section>
+
+  <section class="slide" tabindex="-1" aria-label="Слайд 12">
+    <div class="eyebrow"><span>Дальше</span><span>12</span></div>
+    <h2>Следующие шаги</h2>
+    <div class="grid">
+      <div class="cell l"><h3>Не звать LLM впустую</h3><p>В конце прогона LLM трижды предлагала гипотезы, на которые уже не хватало времени. Перед раундом сверять остаток с длительностью эксперимента.</p></div>
+      <div class="cell l"><h3>LLM все 3 часа</h3><p>Сейчас после 4 раундов без рекорда LLM уходит насовсем, на регрессии это случилось на 6-й минуте. Нужно возвращаться к ней после playbook и local search.</p></div>
+      <div class="cell c"><h3>Дешевле стартовый CatBoost</h3><p>На мультиклассе он занимает 8 минут и проигрывает LightGBM на обеих задачах.</p></div>
+      <div class="cell c"><h3>Устойчивая валидация</h3><p>Несколько seed или второй период для регрессии, чтобы перебор параметров не подгонялся под один фолд.</p></div>
+      <div class="cell"><h3>Качество</h3><p>Ансамбль двух лучших моделей разных семейств. Метрики на вероятностях (ROC-AUC, logloss) — вместе с Тимой.</p></div>
+    </div>
+    <p class="foot">Где что лежит: <code>project_context/repo_map.md</code> · вход для LLM-ассистента: <code>AGENTS.md</code>.</p>
+  </section>
+</main>
+
+<nav class="nav" aria-label="Навигация по слайдам">
+  <button type="button" id="prev" aria-label="Предыдущий слайд">←</button>
+  <span id="count">1 / 12</span>
+  <button type="button" id="next" aria-label="Следующий слайд">→</button>
+</nav>
+
+<script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll(".slide"));
+  var count = document.getElementById("count");
+  function current() {
+    var mid = window.innerHeight / 3, idx = 0;
+    slides.forEach(function (s, i) { if (s.getBoundingClientRect().top <= mid) idx = i; });
+    return idx;
+  }
+  function go(i) {
+    i = Math.max(0, Math.min(slides.length - 1, i));
+    slides[i].scrollIntoView({ block: "start" });
+    slides[i].focus({ preventScroll: true });
+  }
+  function update() { count.textContent = (current() + 1) + " / " + slides.length; }
+  document.getElementById("prev").addEventListener("click", function () { go(current() - 1); });
+  document.getElementById("next").addEventListener("click", function () { go(current() + 1); });
+  document.addEventListener("keydown", function (e) {
+    if (e.target.closest && e.target.closest("input, textarea")) return;
+    if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") { e.preventDefault(); go(current() + 1); }
+    if (e.key === "ArrowLeft" || e.key === "PageUp") { e.preventDefault(); go(current() - 1); }
+  });
+  window.addEventListener("scroll", update, { passive: true });
+  update();
+})();
+</script>

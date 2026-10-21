@@ -18,3 +18,7 @@ Thumbs.db
 # intentional experiment evidence)
 /catboost_info/
 /runs/
+
+# Agent outputs when run next to a task.md (default work dir / submission path)
+agent_work/
+Base/Datasets/**/submission.csv

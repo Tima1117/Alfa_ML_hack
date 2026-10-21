@@ -28,6 +28,7 @@ from ml_core import model_registry
 from ml_core.contracts import DataProfile, ExperimentConfig, ExperimentResult, TaskSpec, ValidationPlan
 from ml_core.errors import UnsupportedTaskTypeError
 from ml_core.experiment_log import record as log_record
+from ml_core.feature_steps import apply_feature_steps, parse_steps
 from ml_core.io_utils import config_hash
 from ml_core.metrics import build_task_metric_fn
 from ml_core.preprocessing import (
@@ -120,6 +121,11 @@ def run_experiment(
         )
 
     try:
+        parse_steps(experiment_config.feature_steps)
+    except Exception as exc:
+        return _result("failed", error_message=f"feature_steps: {type(exc).__name__}: {exc}")
+
+    try:
         fold_val_idx = load_fold_indices(validation_plan, train_path)
         df = pd.read_csv(train_path)
     except Exception as exc:
@@ -158,14 +164,25 @@ def run_experiment(
             fold_train, fold_val = df.iloc[train_idx], df.iloc[val_idx]
             y_train, y_val = y_all[train_idx], y_all[val_idx]
 
+            fold_cols = feature_cols
+            if experiment_config.feature_steps:
+                fold_train, (fold_val,), fold_cols = apply_feature_steps(
+                    experiment_config.feature_steps,
+                    fold_train,
+                    [fold_val],
+                    feature_cols,
+                    experiment_config.preprocessing.high_cardinality_threshold,
+                )
+                diagnostics["n_features_after_steps"] = len(fold_cols.numeric) + len(fold_cols.categorical)
+
             mode = experiment_config.preprocessing.mode
             if mode == "native":
-                vocab = CategoryVocabulary().fit(fold_train, feature_cols.categorical)
-                X_train = prepare_native_frame(fold_train, feature_cols, vocab, experiment_config.model_name)
-                X_val = prepare_native_frame(fold_val, feature_cols, vocab, experiment_config.model_name)
-                cat_names = feature_cols.categorical
+                vocab = CategoryVocabulary().fit(fold_train, fold_cols.categorical)
+                X_train = prepare_native_frame(fold_train, fold_cols, vocab, experiment_config.model_name)
+                X_val = prepare_native_frame(fold_val, fold_cols, vocab, experiment_config.model_name)
+                cat_names = fold_cols.categorical
             else:
-                preproc = build_linear_preprocessor(feature_cols, experiment_config.preprocessing)
+                preproc = build_linear_preprocessor(fold_cols, experiment_config.preprocessing)
                 X_train = preproc.fit_transform(fold_train)
                 X_val = preproc.transform(fold_val)
                 cat_names = None

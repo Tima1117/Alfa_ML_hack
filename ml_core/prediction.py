@@ -18,6 +18,7 @@ import pandas as pd
 
 from ml_core import model_registry
 from ml_core.contracts import DataProfile, ExperimentConfig, PredictionResult, TaskSpec
+from ml_core.feature_steps import apply_feature_steps
 from ml_core.io_utils import atomic_write_csv
 from ml_core.preprocessing import (
     CategoryVocabulary,
@@ -69,16 +70,26 @@ def refit_and_predict(
         else:
             y = train[task_spec.target_column].to_numpy(dtype=float)
 
+        train_features, test_features = train, test
+        if experiment_config.feature_steps:
+            train_features, (test_features,), feature_cols = apply_feature_steps(
+                experiment_config.feature_steps,
+                train,
+                [test],
+                feature_cols,
+                experiment_config.preprocessing.high_cardinality_threshold,
+            )
+
         mode = experiment_config.preprocessing.mode
         if mode == "native":
-            vocab = CategoryVocabulary().fit(train, feature_cols.categorical)
-            X_train = prepare_native_frame(train, feature_cols, vocab, experiment_config.model_name)
-            X_test = prepare_native_frame(test, feature_cols, vocab, experiment_config.model_name)
+            vocab = CategoryVocabulary().fit(train_features, feature_cols.categorical)
+            X_train = prepare_native_frame(train_features, feature_cols, vocab, experiment_config.model_name)
+            X_test = prepare_native_frame(test_features, feature_cols, vocab, experiment_config.model_name)
             cat_names = feature_cols.categorical
         else:
             preproc = build_linear_preprocessor(feature_cols, experiment_config.preprocessing)
-            X_train = preproc.fit_transform(train)
-            X_test = preproc.transform(test)
+            X_train = preproc.fit_transform(train_features)
+            X_test = preproc.transform(test_features)
             cat_names = None
 
         model = model_registry.build_model(

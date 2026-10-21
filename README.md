@@ -1,5 +1,8 @@
 # ml_core — ML backend for the AutoResearch agent
 
+> Карта репозитория (что где лежит, для человека и LLM): [project_context/repo_map.md](project_context/repo_map.md) ·
+> презентация решения: [docs/presentation/agent_deck.html](docs/presentation/agent_deck.html) · вход для LLM-ассистентов: [AGENTS.md](AGENTS.md)
+
 My part of the hackathon team's agent: a plain Python package that profiles
 a tabular ML task, builds an honest validation split, trains/evaluates one
 hypothesis at a time, and produces a checked, atomically-written
@@ -10,6 +13,19 @@ timeout enforcement.
 
 Full integration contract (objects, operations, what each side needs to
 provide): **[docs/CONTRACTS.md](docs/CONTRACTS.md)**.
+
+## LLM research agent (`agent/`)
+
+The second layer of the team's solution: an AutoResearch loop on top of
+`ml_core` that understands the task, proposes hypotheses (LLM or a generic
+playbook when no LLM is configured), runs them under one honest validation
+split, analyses the results and writes the best `submission.csv`. Entry point
+for infrastructure: `agent.research.run_research(task_md, deadline_ts)`;
+contract and env variables: **[docs/AGENT_CONTRACT.md](docs/AGENT_CONTRACT.md)**.
+
+```bash
+python scripts/run_agent_local.py "Base/Datasets/Регрессия/task.md" --budget-s 600 --no-llm
+```
 
 ## Install
 
