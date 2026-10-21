@@ -212,3 +212,44 @@ def test_final_check_rejects_bad_submission(packaged, csv_text):
     (task / "submission.csv").write_text(csv_text)
     with pytest.raises(ValueError):
         entry.check_submission(task / "task.md", task / "submission.csv")
+
+
+def test_child_main_still_calls_run_research_if_cpu_pinning_is_denied(tmp_path, monkeypatch):
+    """Real incident: a hardened multi-tenant sandbox denied os.sched_setaffinity (the Python
+    binding exists, hasattr is true, but the syscall itself raised) at a point in child_main()
+    that ran before run_research() — whose own first action writes the fallback submission.csv.
+    No submission.csv was ever written; the platform scored the task 0 for a missing file, not
+    a model failure. child_main() must reach run_research() regardless of what happens before it."""
+    entry_spec = importlib.util.spec_from_file_location("infra_entry_cpu", ROOT / "infra/solution.py")
+    entry = importlib.util.module_from_spec(entry_spec)
+    entry_spec.loader.exec_module(entry)
+
+    def denied(*_a, **_k):
+        raise PermissionError("Operation not permitted")  # what a seccomp/gVisor sandbox raises
+
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0}, raising=False)
+    monkeypatch.setattr(os, "sched_setaffinity", denied, raising=False)
+    monkeypatch.setenv("AGENT_N_JOBS", "1")
+
+    import agent.research
+    from types import SimpleNamespace
+
+    called = {}
+
+    def fake_run_research(task_md, deadline_ts=None, work_dir=None, **kwargs):
+        called["ran"] = True
+        return SimpleNamespace(status="ok", task_type="regression", metric_name="rmse")
+
+    monkeypatch.setattr(agent.research, "run_research", fake_run_research)
+
+    task_md = tmp_path / "task.md"
+    task_md.write_text("Regression.", encoding="utf-8")
+    (tmp_path / "train.csv").write_text("id,x,y\n1,2,3\n")
+    (tmp_path / "test.csv").write_text("id,x\n2,3\n")
+    (tmp_path / "data_dictionary.csv").write_text("feature,role,dtype\nid,id,int\nx,feature,float\ny,target,float\n")
+    (tmp_path / "sample_submission.csv").write_text("id,y\n2,0\n")
+    work = tmp_path / "agent_work"
+
+    args = SimpleNamespace(runtime=str(ROOT), work=str(work), task=str(task_md), deadline=None)
+    entry.child_main(args)
+    assert called.get("ran") is True  # the real crash point: this used to never be reached

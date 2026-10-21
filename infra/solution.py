@@ -111,16 +111,36 @@ def check_submission(task, output):
 
 def child_main(args):
     sys.path.insert(0, str(Path(args.runtime).resolve()))
-    if hasattr(os, "sched_getaffinity"):
-        available = sorted(os.sched_getaffinity(0))
-        os.sched_setaffinity(0, available[:int(os.environ["AGENT_N_JOBS"])])
+    try:
+        if hasattr(os, "sched_getaffinity"):
+            available = sorted(os.sched_getaffinity(0))
+            os.sched_setaffinity(0, available[:int(os.environ["AGENT_N_JOBS"])])
+    except Exception:
+        # CPU pinning is an optimization, not a requirement: a hardened multi-tenant sandbox
+        # (seccomp/gVisor — plausible for a platform running arbitrary teams' code) can deny
+        # this syscall even though the Python binding exists (hasattr is true, the call itself
+        # raises). --cpus at the container level and AGENT_N_JOBS already bound actual usage.
+        # Real incident: this raised unguarded here, before run_research() ever ran — so its
+        # own first action (write_fallback_submission) never happened either, no submission.csv
+        # was ever written, and the platform scored the task 0 for a missing file, not a model
+        # failure. Whatever happens in this function must never prevent run_research() from
+        # being called; see the next try/except too.
+        pass
     # Imports stay in the child: startup/model failures cannot crash the observer.
     from agent.research import run_research
-    from agent.task_files import locate_task_files
-    from ml_core.profiling import infer_task_spec
-    files = locate_task_files(args.task)
-    spec = infer_task_spec(files.train, files.data_dictionary, files.sample_submission)
-    (Path(args.work) / "infra_task_spec.json").write_text(spec.model_dump_json(), encoding="utf-8")
+    try:
+        from agent.task_files import locate_task_files
+        from ml_core.profiling import infer_task_spec
+
+        files = locate_task_files(args.task)
+        spec = infer_task_spec(files.train, files.data_dictionary, files.sample_submission)
+        (Path(args.work) / "infra_task_spec.json").write_text(spec.model_dump_json(), encoding="utf-8")
+    except Exception:
+        # Best-effort preliminary hint for check_submission() (lets it treat the target
+        # column correctly if run_research() itself never gets to write the real one below).
+        # run_research() redoes this same lookup safely inside its own try/except either way —
+        # this redundant early copy existing or not must never gate whether it gets called.
+        pass
     report = run_research(args.task, deadline_ts=args.deadline, work_dir=args.work)
     # The metric task.md/the LLM actually settles on (report.metric_name) can differ from the
     # preliminary spec above — e.g. a metric needing probabilities (roc_auc, log_loss) changes
