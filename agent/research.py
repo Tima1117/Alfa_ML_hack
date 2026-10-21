@@ -66,7 +66,15 @@ def _env_float(name: str, default: float) -> float:
 
 @dataclass
 class ResearchSettings:
-    max_rounds: int = 60
+    # Not a time budget — the per-round wall-clock check (self.out_of_time / remaining() below)
+    # is the only thing that may stop a run early, unconditionally, every round. This cap exists
+    # only so a pathological case (every idea instantly skipped, nothing ever costs real time)
+    # can't spin forever; a real run exhausts its actual time budget long before 500 rounds.
+    # Raised from 60 after a real 3h/qwen3.8-27b run on the Регрессия task used only 78.5 of its
+    # ~170 available minutes before hitting the old cap — local-search was still finding small
+    # improvements that late (43.98 -> 43.82 RMSE in its last ~10 rounds), so the real budget was
+    # sitting idle for no reason.
+    max_rounds: int = 500
     hypotheses_per_round: int = 3
     patience_rounds: int = 4  # LLM rounds in a row without a new best before the LLM phase ends
     llm_rest_rounds: int = 6  # playbook/local-search rounds before the LLM gets another turn
