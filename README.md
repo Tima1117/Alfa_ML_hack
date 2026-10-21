@@ -1,5 +1,12 @@
 # ml_core — ML backend for the AutoResearch agent
 
+## Platform infrastructure
+
+The flat submission ZIP is built with `python3 scripts/build_submission.py /path/to/alfa_solution.zip`.
+The launcher restores the unchanged packages in the task directory, supervises time/memory/processes,
+and independently validates `submission.csv`. See [docs/INFRASTRUCTURE.md](docs/INFRASTRUCTURE.md)
+for Russian instructions, settings, clean-ZIP verification and optional Linux container checks.
+
 > Карта репозитория (что где лежит, для человека и LLM): [project_context/repo_map.md](project_context/repo_map.md) ·
 > презентация решения: [docs/presentation/agent_deck.html](docs/presentation/agent_deck.html) · вход для LLM-ассистентов: [AGENTS.md](AGENTS.md)
 
