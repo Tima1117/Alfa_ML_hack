@@ -89,6 +89,28 @@ def test_research_survives_a_broken_llm_and_a_tight_deadline(regression_dataset,
     assert len(pd.read_csv(tmp_path / "late.csv")) == len(pd.read_csv(regression_dataset["test"]))
 
 
+def test_fallback_submission_is_refreshed_for_a_probability_metric_decided_only_from_task_md(
+    binary_classification_dataset, tmp_path
+):
+    """private_drill_logloss/README.md: prepare() writes the very first fallback submission
+    against spec0, which is purely data-driven and has no idea the task.md metric needs
+    probabilities (that's decided a few lines later). Under a tight enough deadline that no
+    real experiment ever finishes, that first, wrong-shaped (hard-label) fallback is what ends
+    up as the final submission.csv — a file that exists, but fails the roc_auc/log_loss format
+    check just as surely as a missing file would. Confirmed against the real infra layer with
+    verify_submission.py on a synthetic drill before this fix; this is the fast unit-level version."""
+    task_md = _task_md(binary_classification_dataset, "# Задача\nМетрика оценки — ROC-AUC.\n")
+    report = run_research(
+        task_md, time.time() - 1, llm=None, work_dir=tmp_path / "w", out_path=tmp_path / "submission.csv",
+    )
+    assert report.status == "ok" and report.submitted_experiment_id == "fallback"
+    assert report.metric_name == "roc_auc"
+    sub = pd.read_csv(tmp_path / "submission.csv")
+    values = sub["churn"]
+    assert pd.api.types.is_float_dtype(values) or pd.api.types.is_integer_dtype(values)
+    assert values.between(0, 1).all()
+
+
 def test_llm_gets_another_turn_after_the_playbook(regression_dataset, tmp_path):
     task_md = _task_md(regression_dataset, "RMSE")
     stop = json.dumps({"analysis": "nothing to add", "hypotheses": [], "stop": True})

@@ -323,6 +323,22 @@ class _Researcher:
         self.report.task_type, self.report.metric_name = spec.task_type, spec.metric_name
         self.report.greater_is_better, self.report.metric_source = spec.greater_is_better, md.source
 
+        if spec.metric_name != spec0.metric_name:
+            # The very first fallback above was written against spec0, whose metric is only a
+            # data-driven guess (infer_task_spec doesn't read task.md). For a probability metric
+            # (roc_auc, log_loss) that guess is usually a hard-label metric instead, so that
+            # fallback is a hard class label, not a probability. If every real experiment then
+            # fails or times out before refit (private_drill_logloss/README.md: a too-tight
+            # budget skipped the only seed candidate), that wrong-shaped fallback is what ships —
+            # same "technically a file, but not a valid submission for this metric" failure as
+            # the missing-file sched_setaffinity incident, just one level deeper. Refreshing it
+            # here, cheaply, before any time budget is spent on real experiments, closes that gap.
+            fb2 = prediction.write_fallback_submission(spec, profile, f.train, f.test, self.out_path)
+            if fb2.status == "success":
+                self.log(f"fallback submission refreshed for metric={spec.metric_name}")
+            else:
+                self.log(f"WARNING: fallback refresh failed: {fb2.error_message}")
+
         vd = decide_validation(spec, profile, tcands, understanding)
         try:
             plan = validation.create_validation(

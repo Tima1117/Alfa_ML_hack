@@ -1,0 +1,9 @@
+feature,role,dtype,unit,description_ru
+customer_id,id,numeric,,Уникальный идентификатор клиента
+tenure_months,feature,numeric,months,Сколько месяцев клиент пользуется услугой
+monthly_charges,feature,numeric,currency,Ежемесячный платёж
+support_tickets_12m,feature,numeric,count,Число обращений в поддержку за последние 12 месяцев
+usage_score,feature,numeric,score,Индекс активности использования услуги (0-100)
+contract_type,feature,category,,Тип контракта: Monthly/One-year/Two-year
+payment_method,feature,category,,Способ оплаты: Card/Bank transfer/Mobile wallet
+churned,target,category,,Факт оттока клиента: Yes/No
