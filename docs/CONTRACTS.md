@@ -171,6 +171,41 @@ than crashing if a library isn't installed in a given environment.
 `autogluon` / `lightautoml` / `flaml` are in `requirements.txt` but **not**
 wrapped here on purpose — see "Next improvements" below.
 
+### Probability-scored metrics (`roc_auc`, `log_loss`) — binary classification only
+
+Found by stress-testing against a synthetic task shaped like a plausible
+private one (imbalanced binary target, metric stated as ROC-AUC in
+`task.md`): `macro_f1`/`weighted_f1`/`accuracy` all score a *hard*
+prediction, but `roc_auc` and `log_loss` need a probability. Before this,
+`run_experiment`/`refit_and_predict` always called `model.predict()` for
+classification — under real class imbalance this collapses to predicting
+the majority class for every row, which is a valid *label* but a useless
+*probability* (ROC-AUC ≈ 0.5, i.e. no better than random), even though the
+underlying model may be fine.
+
+When `task_spec.metric_name` is `"roc_auc"` or `"log_loss"`
+(`metrics.metric_needs_proba(task_spec)`), both functions now call
+`model.predict_proba(X)` instead and submit `P(label == task_spec.class_labels[1])`
+as a float in `[0, 1]` — looked up by position in the fitted model's
+`classes_`, not assumed to be column 1 (`model_registry.positive_class_proba`).
+`TaskSpec.prediction_requirements.output_columns` doesn't change (still
+`[id_col, target_col]`); only the *values* in the target column become
+probabilities instead of class-label strings, and `_check_submission`
+validates them as finite numbers in `[0, 1]` rather than against the
+allowed-label set. `infra/solution.py`'s independent CSV check reads the
+same decision (`infra_task_spec.json`'s `needs_proba` field, written after
+`run_research` settles on the real metric — task.md/the LLM can pick a
+different metric than the preliminary guess) so it doesn't wrongly reject a
+valid probability as "not one of train's labels".
+
+**Scope: binary classification only.** A metric needing probabilities on a
+3+-class task would need a genuinely different submission shape (one
+probability column per class, driven by `sample_submission.csv`'s own
+columns) that isn't implemented — `check_proba_metric_supported` raises
+before any data is touched, which `run_experiment`/`refit_and_predict` turn
+into `status="unsupported"`/`status="failed"` rather than silently emitting
+a wrong-shaped file.
+
 ### `preprocessing.mode`
 
 - `"native"` (default): for the four tree models. Numeric NaNs are left as

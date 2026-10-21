@@ -20,6 +20,8 @@ from ml_core import model_registry
 from ml_core.contracts import DataProfile, ExperimentConfig, PredictionResult, TaskSpec
 from ml_core.feature_steps import apply_feature_steps
 from ml_core.io_utils import atomic_write_csv
+from ml_core.metrics import check_proba_metric_supported, metric_needs_proba
+from ml_core.model_registry import positive_class_proba
 from ml_core.preprocessing import (
     CategoryVocabulary,
     build_linear_preprocessor,
@@ -56,6 +58,12 @@ def refit_and_predict(
                 "(it cannot be fit on raw NaN / pandas-category input) — got mode='native'."
             ),
         )
+
+    try:
+        check_proba_metric_supported(task_spec)
+    except Exception as exc:
+        return PredictionResult(status="failed", output_path=str(out_path), error_message=f"{type(exc).__name__}: {exc}")
+    needs_proba = metric_needs_proba(task_spec)
 
     feature_cols = split_feature_columns(data_profile.columns, experiment_config.preprocessing)
 
@@ -106,6 +114,9 @@ def refit_and_predict(
             model.fit(X_train, y_fit)
             raw_pred = model.predict(X_test)
             predictions = inverse_target_transform(raw_pred, experiment_config.preprocessing.target_transform)
+        elif needs_proba:
+            model.fit(X_train, y)
+            predictions = positive_class_proba(model, X_test)
         else:
             model.fit(X_train, y)
             pred_int = model.predict(X_test)
@@ -164,9 +175,18 @@ def _check_submission(
     }
 
     target_col = task_spec.target_column
-    if task_spec.task_type == "regression":
-        values = submission[target_col].to_numpy(dtype=float)
-        checks["no_inf"] = task_spec.prediction_requirements.allow_inf or bool(np.isfinite(values).all())
+    if task_spec.task_type == "regression" or metric_needs_proba(task_spec):
+        try:
+            values = submission[target_col].to_numpy(dtype=float)
+            checks["no_inf"] = task_spec.prediction_requirements.allow_inf or bool(np.isfinite(values).all())
+        except (ValueError, TypeError):
+            checks["no_inf"] = False
+            warnings.append(f"column {target_col!r} is not numeric")
+        if task_spec.task_type == "classification":
+            in_range = bool(np.all((values >= 0) & (values <= 1))) if checks.get("no_inf") else False
+            checks["probabilities_in_unit_range"] = in_range
+            if not in_range:
+                warnings.append("predicted values must be probabilities in [0, 1] for this metric")
     else:
         allowed = set(task_spec.class_labels or [])
         predicted = set(submission[target_col].astype(str).unique())

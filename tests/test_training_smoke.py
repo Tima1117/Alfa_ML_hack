@@ -4,6 +4,13 @@ from ml_core.training import run_experiment
 from ml_core.validation import create_validation
 
 
+def _roc_auc_setup(paths, tmp_path):
+    task_spec = infer_task_spec(paths["train"], paths["dict"], paths["sub"], metric_name="roc_auc", greater_is_better=True)
+    data_profile = profile_data(paths["train"], paths["dict"], paths["test"])
+    val_plan = create_validation(task_spec, paths["train"], tmp_path / "val", n_splits=3, seed=0)
+    return task_spec, data_profile, val_plan
+
+
 def _setup(paths, tmp_path, strategy=None):
     task_spec = infer_task_spec(paths["train"], paths["dict"], paths["sub"])
     data_profile = profile_data(paths["train"], paths["dict"], paths["test"])
@@ -117,3 +124,29 @@ def test_repeated_run_is_deterministic(regression_dataset, tmp_path):
     res_b = run_experiment(task_spec, cfg, val_plan, data_profile, regression_dataset["train"])
     assert res_a.metric_value == res_b.metric_value
     assert res_a.fold_metrics == res_b.fold_metrics
+
+
+def test_roc_auc_experiment_uses_real_probabilities_not_a_collapsed_hard_label(binary_classification_dataset, tmp_path):
+    """Regression test for a real finding: scoring on model.predict() under imbalance
+    collapses to the majority class for every row, which reads as a valid label but
+    gives roc_auc ~= 0.5 (useless) no matter how good the model actually is. A fold score
+    well above 0.5 here proves run_experiment is actually using predict_proba."""
+    task_spec, data_profile, val_plan = _roc_auc_setup(binary_classification_dataset, tmp_path)
+    cfg = ExperimentConfig(model_name="hist_gradient_boosting", validation_id=val_plan.validation_id)
+    res = run_experiment(task_spec, cfg, val_plan, data_profile, binary_classification_dataset["train"])
+    assert res.status == "success", res.error_message
+    assert res.metric_name == "roc_auc"
+    assert res.metric_value > 0.7  # the fixture's signal is strong; a collapsed prediction would read ~0.5
+
+
+def test_roc_auc_on_multiclass_task_is_unsupported_not_a_crash(classification_dataset, tmp_path):
+    task_spec = infer_task_spec(
+        classification_dataset["train"], classification_dataset["dict"], classification_dataset["sub"],
+        metric_name="roc_auc", greater_is_better=True,
+    )
+    data_profile = profile_data(classification_dataset["train"], classification_dataset["dict"], classification_dataset["test"])
+    val_plan = create_validation(task_spec, classification_dataset["train"], tmp_path / "val", n_splits=3, seed=0)
+    cfg = ExperimentConfig(model_name="hist_gradient_boosting", validation_id=val_plan.validation_id)
+    res = run_experiment(task_spec, cfg, val_plan, data_profile, classification_dataset["train"])
+    assert res.status == "unsupported"
+    assert "roc_auc" in res.error_message

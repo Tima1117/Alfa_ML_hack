@@ -1,0 +1,14 @@
+feature,role,dtype,unit,description_ru
+id,id,numeric,,Уникальный идентификатор заявки
+application_batch,feature,numeric,,Код партии обработки заявок; анонимизированный период
+age,feature,numeric,years,Возраст заявителя
+annual_income,feature,numeric,currency,Годовой доход заявителя; присутствуют пропуски
+loan_amount,feature,numeric,currency,Запрошенная сумма кредита
+credit_history_years,feature,numeric,years,Длина кредитной истории в годах; присутствуют пропуски
+debt_to_income_ratio,feature,numeric,ratio,Отношение долга к доходу
+num_late_payments,feature,numeric,count,Число просроченных платежей за последний год
+interest_rate,feature,numeric,percent,Процентная ставка по кредиту
+employment_type,feature,category,,Тип занятости заявителя
+loan_purpose,feature,category,,Цель кредита
+region_code,feature,category,,Код региона заявителя
+default,target,category,,Факт дефолта по кредиту: Yes/No

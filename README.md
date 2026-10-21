@@ -66,7 +66,7 @@ a real `submission.csv` under `examples/runs/<task>/`.
 ```
 ml_core/
   contracts.py        TaskSpec, ExperimentConfig, ExperimentResult, DataProfile, ValidationPlan, PredictionResult
-  metrics.py           rmse / macro_f1 / mae / r2 / accuracy / weighted_f1, direction fixed per metric
+  metrics.py           rmse / macro_f1 / mae / r2 / accuracy / weighted_f1 / roc_auc / log_loss, direction fixed per metric
   profiling.py          profile_data(), infer_task_spec() — from data_dictionary.csv + sample_submission.csv
   validation.py          create_validation() — kfold / stratified_kfold / time_split / group_kfold
   preprocessing.py        native (NaN/category-dtype, for tree models) and linear (impute+encode+scale) modes

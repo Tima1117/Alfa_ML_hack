@@ -78,3 +78,20 @@ def test_refit_and_predict_does_not_write_file_when_checks_fail(regression_datas
 
     assert result.status == "failed"
     assert not out_path.exists()
+
+
+def test_refit_and_predict_roc_auc_writes_probabilities_not_labels(binary_classification_dataset, tmp_path):
+    paths = binary_classification_dataset
+    task_spec = infer_task_spec(paths["train"], paths["dict"], paths["sub"], metric_name="roc_auc", greater_is_better=True)
+    data_profile = profile_data(paths["train"], paths["dict"], paths["test"])
+    cfg = ExperimentConfig(model_name="hist_gradient_boosting", validation_id="refit")
+    out_path = tmp_path / "submission.csv"
+    result = refit_and_predict(task_spec, cfg, data_profile, paths["train"], paths["test"], out_path)
+
+    assert result.status == "success", result.error_message
+    assert result.checks_passed.get("probabilities_in_unit_range") is True
+    submission = pd.read_csv(out_path)
+    values = submission["churn"]
+    assert pd.api.types.is_float_dtype(values)
+    assert values.between(0, 1).all()
+    assert values.nunique() > 5  # real per-row probabilities, not a constant/collapsed column

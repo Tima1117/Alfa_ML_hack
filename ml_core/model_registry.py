@@ -161,3 +161,21 @@ def build_model(
         return XGBClassifier(**params)
 
     raise UnsupportedTaskTypeError(f"model_name {model_name!r} has no builder implemented")
+
+
+def positive_class_proba(model, X) -> "np.ndarray":
+    """P(label == 1) for a fitted binary classifier, used when the task's metric needs a
+    probability (roc_auc, log_loss) rather than a hard prediction.
+
+    Looks up the positive class's column in predict_proba's output by its position in
+    model.classes_ rather than assuming it's always column 1 — sklearn-compatible
+    estimators sort fitted classes, which happens to put binary {0, 1} labels in order,
+    but asserting it directly is cheap insurance against a model that doesn't.
+    """
+    import numpy as np
+
+    proba = model.predict_proba(X)
+    classes = list(model.classes_)
+    if 1 not in classes:
+        raise ValueError(f"fitted model's classes_ {classes} has no label '1' to read a positive-class probability from")
+    return np.asarray(proba)[:, classes.index(1)]

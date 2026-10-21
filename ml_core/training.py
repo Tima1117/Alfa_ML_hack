@@ -25,12 +25,13 @@ import numpy as np
 import pandas as pd
 
 from ml_core import model_registry
+from ml_core.model_registry import positive_class_proba
 from ml_core.contracts import DataProfile, ExperimentConfig, ExperimentResult, TaskSpec, ValidationPlan
 from ml_core.errors import UnsupportedTaskTypeError
 from ml_core.experiment_log import record as log_record
 from ml_core.feature_steps import apply_feature_steps, parse_steps
 from ml_core.io_utils import config_hash
-from ml_core.metrics import build_task_metric_fn
+from ml_core.metrics import build_task_metric_fn, check_proba_metric_supported, metric_needs_proba
 from ml_core.preprocessing import (
     CategoryVocabulary,
     build_linear_preprocessor,
@@ -93,6 +94,12 @@ def run_experiment(
         metric_fn = build_task_metric_fn(task_spec)
     except Exception as exc:  # metric/direction contract mismatch
         return _result("failed", error_message=f"{type(exc).__name__}: {exc}")
+
+    try:
+        check_proba_metric_supported(task_spec)
+    except Exception as exc:  # metric needs probabilities on a shape we don't support (e.g. 3+ classes)
+        return _result("unsupported", error_message=f"{type(exc).__name__}: {exc}")
+    needs_proba = metric_needs_proba(task_spec)
 
     # Fail fast (before touching data) if the model/library isn't usable here.
     try:
@@ -201,6 +208,9 @@ def run_experiment(
                 model.fit(X_train, y_fit)
                 pred_val = model.predict(X_val)
                 pred_val = inverse_target_transform(pred_val, experiment_config.preprocessing.target_transform)
+            elif needs_proba:
+                model.fit(X_train, y_train)
+                pred_val = positive_class_proba(model, X_val)
             else:
                 model.fit(X_train, y_train)
                 pred_val = model.predict(X_val)

@@ -22,3 +22,9 @@ Thumbs.db
 # Agent outputs when run next to a task.md (default work dir / submission path)
 agent_work/
 Base/Datasets/**/submission.csv
+private_drill/agent_work/
+private_drill/submission.csv
+
+# Built platform ZIP — a generated artifact, rebuild with scripts/build_submission.py
+/alfa_solution.zip
+/alfa_solution.manifest.json

@@ -18,8 +18,10 @@ import numpy as np
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
+    log_loss,
     mean_absolute_error,
     r2_score,
+    roc_auc_score,
     root_mean_squared_error,
 )
 
@@ -34,6 +36,12 @@ class Metric:
     name: str
     greater_is_better: bool
     fn: Callable[[np.ndarray, np.ndarray], float]
+    # True for metrics that score a continuous probability/confidence (roc_auc, log_loss)
+    # rather than a hard prediction. Binary classification only (see build_task_metric_fn) —
+    # a private task pairing one of these with 3+ classes needs a real multi-column
+    # probability submission format, which isn't implemented yet; run_experiment reports
+    # status="unsupported" for that case instead of guessing at a format.
+    needs_proba: bool = False
 
 
 def _rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -60,6 +68,16 @@ def _accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(accuracy_score(y_true, y_pred))
 
 
+def _roc_auc(y_true: np.ndarray, y_score: np.ndarray) -> float:
+    """y_score: probability of the positive class (the higher-coded binary label), shape (n,)."""
+    return float(roc_auc_score(y_true, y_score))
+
+
+def _log_loss(y_true: np.ndarray, y_score: np.ndarray) -> float:
+    """y_score: probability of the positive class, shape (n,) — sklearn infers the complement."""
+    return float(log_loss(y_true, y_score, labels=[0, 1]))
+
+
 _REGISTRY: dict[str, Metric] = {
     "rmse": Metric("rmse", greater_is_better=False, fn=_rmse),
     "mae": Metric("mae", greater_is_better=False, fn=_mae),
@@ -67,6 +85,8 @@ _REGISTRY: dict[str, Metric] = {
     "macro_f1": Metric("macro_f1", greater_is_better=True, fn=_macro_f1),
     "weighted_f1": Metric("weighted_f1", greater_is_better=True, fn=_weighted_f1),
     "accuracy": Metric("accuracy", greater_is_better=True, fn=_accuracy),
+    "roc_auc": Metric("roc_auc", greater_is_better=True, fn=_roc_auc, needs_proba=True),
+    "log_loss": Metric("log_loss", greater_is_better=False, fn=_log_loss, needs_proba=True),
 }
 
 # Metrics computed for context even when they are not the competition metric.
@@ -84,6 +104,24 @@ def get_metric(name: str) -> Metric:
 
 def available_metrics() -> list[str]:
     return sorted(_REGISTRY)
+
+
+def metric_needs_proba(task_spec: "TaskSpec") -> bool:
+    return get_metric(task_spec.metric_name).needs_proba
+
+
+def check_proba_metric_supported(task_spec: "TaskSpec") -> None:
+    """Raise UnknownMetricError if metric_name needs probabilities on a task shape
+    we don't support yet (anything but binary classification — see Metric.needs_proba)."""
+    if not metric_needs_proba(task_spec):
+        return
+    if task_spec.task_type != "classification" or len(task_spec.class_labels or []) != 2:
+        raise UnknownMetricError(
+            f"metric {task_spec.metric_name!r} needs a probability output, which this package only "
+            f"supports for binary classification; task_type={task_spec.task_type!r} with "
+            f"{len(task_spec.class_labels or [])} class(es) would need a multi-column probability "
+            "submission format that isn't implemented."
+        )
 
 
 def build_task_metric_fn(task_spec: "TaskSpec") -> Callable[[np.ndarray, np.ndarray], float]:

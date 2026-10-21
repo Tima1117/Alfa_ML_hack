@@ -115,3 +115,54 @@ def classification_dataset(tmp_path: Path) -> dict[str, Path]:
     dd.to_csv(paths["dict"], index=False)
     sample_sub.to_csv(paths["sub"], index=False)
     return paths
+
+
+@pytest.fixture
+def binary_classification_dataset(tmp_path: Path) -> dict[str, Path]:
+    """Imbalanced binary target (~10% positive) — shaped for roc_auc/log_loss tests.
+
+    Mirrors the real finding from drilling a synthetic "private-like" task: under real
+    imbalance, a hard model.predict() collapses to the majority class for every row,
+    which is a valid label but a useless probability (auc ~= 0.5) regardless of how good
+    the underlying model is — the dataset needs real separable signal to tell a correctly
+    probability-scored submission apart from that collapse.
+    """
+    rng = np.random.default_rng(7)
+    n_train, n_test = 600, 200
+
+    def make(n: int, start_id: int, categories: list[str]) -> pd.DataFrame:
+        x1 = rng.normal(0, 1, n)
+        x2 = rng.normal(0, 1, n)
+        cat = rng.choice(categories, n)
+        z = -2.5 + 1.8 * x1 + 0.6 * x2 + (cat == "A").astype(float) * 0.8
+        prob = 1 / (1 + np.exp(-z))
+        label = np.where(rng.random(n) < prob, "Yes", "No")
+        return pd.DataFrame(
+            {"id": np.arange(start_id, start_id + n), "x1": x1, "x2": x2, "segment": cat, "churn": label}
+        )
+
+    train = make(n_train, 0, ["A", "B", "C"])
+    test = make(n_test, n_train, ["A", "B", "D"]).drop(columns=["churn"])  # "D" unseen at train time
+
+    dd = pd.DataFrame(
+        {
+            "feature": ["id", "x1", "x2", "segment", "churn"],
+            "role": ["id", "feature", "feature", "feature", "target"],
+            "dtype": ["numeric", "numeric", "numeric", "category", "category"],
+            "unit": ["", "", "", "", ""],
+            "description_ru": ["", "", "", "", ""],
+        }
+    )
+    sample_sub = pd.DataFrame({"id": test["id"], "churn": 0.0})
+
+    paths = {
+        "train": tmp_path / "train.csv",
+        "test": tmp_path / "test.csv",
+        "dict": tmp_path / "data_dictionary.csv",
+        "sub": tmp_path / "sample_submission.csv",
+    }
+    train.to_csv(paths["train"], index=False)
+    test.to_csv(paths["test"], index=False)
+    dd.to_csv(paths["dict"], index=False)
+    sample_sub.to_csv(paths["sub"], index=False)
+    return paths

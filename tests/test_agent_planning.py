@@ -62,6 +62,29 @@ def test_decide_metric_validates_llm_answers(regression_dataset):
     assert rmsle.metric_name == "rmse" and "log1p" in rmsle.notes[0]
 
 
+def test_roc_auc_detected_in_text_for_binary_classification(binary_classification_dataset):
+    spec = infer_task_spec(
+        binary_classification_dataset["train"], binary_classification_dataset["dict"], binary_classification_dataset["sub"]
+    )
+    assert guess_metric_from_text("Метрика оценки — ROC-AUC.") == "roc_auc"
+    decision = decide_metric("Метрика оценки — ROC-AUC.", spec, None)
+    assert decision.metric_name == "roc_auc" and decision.source == "task.md"
+    assert decide_metric("Метрика: AUC.", spec, None).metric_name == "roc_auc"
+    assert decide_metric("Метрика: log loss.", spec, None).metric_name == "log_loss"
+
+
+def test_roc_auc_falls_back_to_default_on_a_multiclass_task(classification_dataset):
+    """ml_core only supports a probability submission for binary classification (see
+    ml_core/metrics.py); on a 3+-class task, text asking for ROC-AUC must not get accepted —
+    that would make every single experiment come back status="unsupported" for the whole run,
+    never actually falling back to a metric the task can be optimized on."""
+    spec = infer_task_spec(classification_dataset["train"], classification_dataset["dict"], classification_dataset["sub"])
+    decision = decide_metric("Метрика оценки — ROC-AUC.", spec, None)
+    assert decision.metric_name == spec.metric_name  # the task-type default, not roc_auc
+    assert decision.source == "default"
+    assert any("doesn't fit it" in n for n in decision.notes)
+
+
 def test_time_split_only_for_a_truly_later_period(tmp_path):
     train = pd.DataFrame({"id": range(8), "period": [1, 1, 2, 2, 3, 3, 4, 4], "noise_flag": [0, 255] * 4,
                           "x": range(8), "y": [1.0, 2, 3, 4, 5, 6, 7, 8]})

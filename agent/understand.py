@@ -27,13 +27,16 @@ _METRIC_PATTERNS = [
     ("mae", r"\bmae\b|mean[\s-]+absolute[\s-]+error"),
     ("r2", r"\br2\b|r²|coefficient of determination|коэффициент детерминации"),
     ("accuracy", r"\baccuracy\b"),
+    # roc_auc/log_loss need a probability, and ml_core only supports that for binary
+    # classification (ml_core/metrics.py Metric.needs_proba) — _fits_task below falls
+    # back to the task-type default rather than matching these on a 3+-class task.
+    ("roc_auc", r"roc[\s_-]*auc|\bauc\b|\bgini\b"),
+    ("log_loss", r"log[\s_-]*loss|cross[\s-]*entropy"),
 ]
 # metrics ml_core cannot optimize directly -> closest supported one
 _UNSUPPORTED = [
     ("rmsle", r"\brmsle\b|root[\s-]+mean[\s-]+squared[\s-]+log", "rmse"),
     ("mape", r"\bs?mape\b", "mae"),
-    ("roc_auc", r"roc[\s_-]*auc|\bauc\b|\bgini\b", None),
-    ("logloss", r"log[\s_-]*loss|cross[\s-]*entropy", None),
 ]
 
 
@@ -80,9 +83,16 @@ def unsupported_metric_in_text(text: str) -> tuple[str, str | None] | None:
     return found, next(sub for name, _, sub in _UNSUPPORTED if name == found)
 
 
-def _fits_task(metric: str, task_type: str) -> bool:
+def _fits_task(metric: str, default_spec: TaskSpec) -> bool:
     regression = {"rmse", "mae", "r2"}
-    return (metric in regression) == (task_type == "regression")
+    if (metric in regression) != (default_spec.task_type == "regression"):
+        return False
+    if get_metric(metric).needs_proba:
+        # ml_core only has a probability-submission format for binary classification
+        # (ml_core/metrics.py Metric.needs_proba) — a 3+-class task falls back to the
+        # type default below instead of looping on status="unsupported" all run.
+        return len(default_spec.class_labels or []) == 2
+    return True
 
 
 def decide_metric(task_text: str, default_spec: TaskSpec, llm: TaskUnderstanding | None) -> MetricDecision:
@@ -97,15 +107,20 @@ def decide_metric(task_text: str, default_spec: TaskSpec, llm: TaskUnderstanding
             f"{substitute or default_spec.metric_name!r} instead"
             + (" (log1p target transform is the natural match)" if name == "rmsle" else "")
         )
-        if substitute and _fits_task(substitute, task_type):
+        if substitute and _fits_task(substitute, default_spec):
             return MetricDecision(substitute, get_metric(substitute).greater_is_better, "text-substitute", notes)
 
     llm_metric = (llm.metric_name or "").strip().lower() if llm else ""
-    if from_text and _fits_task(from_text, task_type):
+    if from_text and _fits_task(from_text, default_spec):
         if llm_metric and llm_metric != from_text:
             notes.append(f"LLM suggested metric {llm_metric!r}, text says {from_text!r}; using the text")
         return MetricDecision(from_text, get_metric(from_text).greater_is_better, "task.md", notes)
-    if llm_metric in available_metrics() and _fits_task(llm_metric, task_type):
+    if from_text and not _fits_task(from_text, default_spec):
+        notes.append(
+            f"task.md says {from_text!r}, but this task doesn't fit it "
+            f"(needs binary classification for a probability metric); using the default instead"
+        )
+    if llm_metric in available_metrics() and _fits_task(llm_metric, default_spec):
         return MetricDecision(llm_metric, get_metric(llm_metric).greater_is_better, "llm", notes)
     notes.append(f"metric not recognized in task.md; default {default_spec.metric_name!r} for {task_type}")
     return MetricDecision(default_spec.metric_name, default_spec.greater_is_better, "default", notes)

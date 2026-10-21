@@ -67,8 +67,16 @@ def check_submission(task, output):
             allowed.add(row[target])
     # Numeric class labels are also possible. Core task specification wins when available.
     spec_path = output.parent / "agent_work" / "infra_task_spec.json"
+    needs_proba = False
     if spec_path.is_file():
-        categorical = json.loads(spec_path.read_text())["task_type"] == "classification"
+        spec_data = json.loads(spec_path.read_text())
+        categorical = spec_data["task_type"] == "classification"
+        needs_proba = bool(spec_data.get("needs_proba"))
+    if needs_proba:
+        # A probability-scored metric (roc_auc, log_loss): the submission value is a
+        # float in [0, 1], not one of train's class labels, even though the task itself
+        # is classification.
+        categorical = False
     seen = set()
     count = 0
     with files.test.open(encoding="utf-8-sig", newline="") as a, output.open(encoding="utf-8-sig", newline="") as b:
@@ -89,6 +97,10 @@ def check_submission(task, output):
             if categorical:
                 if value not in allowed:
                     raise ValueError("Unknown class in submission")
+            elif needs_proba:
+                parsed = float(value)
+                if not math.isfinite(parsed) or not 0.0 <= parsed <= 1.0:
+                    raise ValueError("Predicted probability is not finite or outside [0, 1]")
             elif not math.isfinite(float(value)):
                 raise ValueError("Prediction is not finite")
             count += 1
@@ -110,7 +122,30 @@ def child_main(args):
     spec = infer_task_spec(files.train, files.data_dictionary, files.sample_submission)
     (Path(args.work) / "infra_task_spec.json").write_text(spec.model_dump_json(), encoding="utf-8")
     report = run_research(args.task, deadline_ts=args.deadline, work_dir=args.work)
-    return 0 if report.status == "ok" else 1
+    # The metric task.md/the LLM actually settles on (report.metric_name) can differ from the
+    # preliminary spec above — e.g. a metric needing probabilities (roc_auc, log_loss) changes
+    # what a valid submission value looks like. check_submission() (run by the parent after this
+    # process exits) reads this updated file, not the preliminary one. Best-effort: a stub/old
+    # report shape or a bundle without ml_core.metrics must not crash a run that already has its
+    # submission written — check_submission() falls back to its original dtype-based check.
+    task_type = getattr(report, "task_type", None)
+    metric_name = getattr(report, "metric_name", None)
+    needs_proba = False
+    try:
+        from ml_core.metrics import get_metric
+
+        if metric_name:
+            needs_proba = get_metric(metric_name).needs_proba
+    except Exception:
+        pass
+    try:
+        (Path(args.work) / "infra_task_spec.json").write_text(
+            json.dumps({"task_type": task_type, "metric_name": metric_name, "needs_proba": needs_proba}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    return 0 if getattr(report, "status", None) == "ok" else 1
 
 
 def discover_processes(proc, known, registry):
