@@ -86,9 +86,14 @@ class SubprocessExecutor:
         try:
             proc.wait(timeout=None if timeout_s is None else max(1.0, timeout_s) + self.grace_s)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
+            # os.killpg/SIGKILL only exist on POSIX; start_new_session=True is a no-op on
+            # Windows, where proc.kill() (TerminateProcess) is already the right call.
+            if hasattr(os, "killpg") and hasattr(signal, "SIGKILL"):
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    proc.kill()
+            else:
                 proc.kill()
             proc.wait()
             return None

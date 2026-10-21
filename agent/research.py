@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import sys
 import time
 import traceback
 from collections import deque
@@ -214,7 +215,13 @@ class _Researcher:
     # ------------------------------------------------------------------ utils
     def log(self, msg: str) -> None:
         line = f"[agent {time.time() - self.started:7.0f}s | left {self.remaining() / 60:6.1f}m] {msg}"
-        self._print(line)
+        try:
+            self._print(line)
+        except UnicodeEncodeError:
+            # A non-UTF-8 console (e.g. the default Windows console codepage) can't encode
+            # every character — this must never end the run, especially once msg can contain
+            # free-text from the LLM. The file log below still gets the exact text.
+            self._print(line.encode(sys.stdout.encoding or "ascii", errors="replace").decode(sys.stdout.encoding or "ascii"))
         try:
             with open(self.work_dir / "agent.log", "a", encoding="utf-8") as fh:
                 fh.write(line + "\n")

@@ -86,7 +86,7 @@ def test_locate_files_platform_layout_and_flat_layout(tmp_path):
     data.mkdir(parents=True)
     for name in ("train", "test", "data_dictionary", "sample_submission"):
         (data / f"{name}.csv").write_text("id\n1\n")
-    (platform / "task.md").write_text("- `regression/participants/train.csv` — rows\n")
+    (platform / "task.md").write_text("- `regression/participants/train.csv` — rows\n", encoding="utf-8")
     files = locate_task_files(platform / "task.md")
     assert files.train == (data / "train.csv").resolve() and files.test.parent == data.resolve()
 

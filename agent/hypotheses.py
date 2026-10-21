@@ -290,7 +290,10 @@ def local_search_hypotheses(best: ExperimentConfig | None, n: int, rng: random.R
                 if new != current:
                     changes[name] = new
         if changes:
-            desc = ", ".join(f"{k} {best.hyperparameters.get(k, '·')}→{v}" for k, v in changes.items())
+            # Plain ASCII on purpose: this text is logged via plain print(), which crashes on a
+            # non-UTF-8 console (e.g. the default Windows console codepage) if it contains
+            # characters that codepage can't encode — reproduced with the arrow this replaced.
+            desc = ", ".join(f"{k} {best.hyperparameters.get(k, '~')}->{v}" for k, v in changes.items())
             out.append(Hypothesis(title=f"tune: {desc}", kind="params", hyperparameters=changes,
                                   rationale="local search around the best config"))
     return out
