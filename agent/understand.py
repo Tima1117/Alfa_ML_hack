@@ -149,9 +149,20 @@ def decide_validation(
     default_folds = 5 if profile.n_rows_train <= 30_000 else 3
     if time_candidates:
         chosen = llm.time_column if llm and llm.time_column in time_candidates else time_candidates[0]
+        # Walk-forward (ml_core/validation.py): fold i trains only on periods strictly
+        # before its own held-out period, so n_splits > 1 is safe now — each extra fold
+        # just needs at least 2 earlier periods left to train the earliest one on. A single
+        # fold (the only mode this used to support) still averages out whatever that one
+        # period happened to look like; multiple folds catch that instead of hiding it.
+        n_unique = next((c.n_unique for c in profile.columns if c.name == chosen), 0)
+        n_splits = max(1, min(3, n_unique - 2))
         return ValidationDecision(
-            "time_split", 1, time_column=chosen,
-            reason=f"all test rows have {chosen} later than any train row; validate on the latest train period",
+            "time_split", n_splits, time_column=chosen,
+            reason=(
+                f"all test rows have {chosen} later than any train row; walk-forward over the "
+                f"{n_splits} latest train period(s)" if n_splits > 1
+                else f"all test rows have {chosen} later than any train row; validate on the latest train period"
+            ),
         )
     if llm and llm.group_column:
         col = next((c for c in profile.columns if c.name == llm.group_column and c.role == "feature"), None)

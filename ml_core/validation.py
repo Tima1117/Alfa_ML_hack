@@ -1,16 +1,26 @@
 """create_validation(): build and persist a reusable, honest validation split.
 
-A ValidationPlan stores only row *positions* (0-based, matching the row order
-of the train.csv it was built from) in an .npz file, plus a fingerprint of
-that train.csv. training.run_experiment() re-checks the fingerprint before
-using a plan, so an experiment can never be silently scored against a split
+A ValidationPlan stores explicit (train, val) row-position pairs per fold (0-based,
+matching the row order of the train.csv it was built from) in an .npz file, plus a
+fingerprint of that train.csv. training.run_experiment() re-checks the fingerprint
+before using a plan, so an experiment can never be silently scored against a split
 built for different data — and two ExperimentResults are only safe to compare
 head-to-head when they share the same validation_id (see
 ExperimentResult.is_fully_comparable and experiment_log.select_best).
+
+Every fold's train_idx is stored explicitly rather than derived as "everything not
+in val_idx" at load time. This matters specifically for `time_split`: a real
+walk-forward split with n_splits > 1 must train each fold only on periods strictly
+earlier than that fold's own held-out period — "everything else" would silently
+leak later (effectively future, relative to that fold) rows into training. Earlier
+versions of this module only supported a single time_split fold for exactly this
+reason; multi-fold time_split is implemented correctly below instead of worked
+around by restricting n_splits=1.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -24,16 +34,22 @@ from ml_core.io_utils import config_hash, ensure_dir, file_fingerprint
 _MIN_CLASS_COUNT_FOR_STRATIFICATION = 2
 
 
+@dataclass(frozen=True)
+class Fold:
+    train_idx: np.ndarray
+    val_idx: np.ndarray
+
+
 def _default_strategy(task_spec: TaskSpec) -> ValidationStrategy:
     return "stratified_kfold" if task_spec.task_type == "classification" else "kfold"
 
 
-def _build_kfold_indices(n_rows: int, n_splits: int, seed: int) -> list[np.ndarray]:
+def _build_kfold_indices(n_rows: int, n_splits: int, seed: int) -> list[Fold]:
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
-    return [val_idx for _, val_idx in kf.split(np.arange(n_rows))]
+    return [Fold(train_idx, val_idx) for train_idx, val_idx in kf.split(np.arange(n_rows))]
 
 
-def _build_stratified_indices(y: pd.Series, n_splits: int, seed: int) -> tuple[list[np.ndarray], list[str]]:
+def _build_stratified_indices(y: pd.Series, n_splits: int, seed: int) -> tuple[list[Fold], list[str]]:
     counts = y.value_counts()
     min_count = int(counts.min())
     warnings: list[str] = []
@@ -50,21 +66,27 @@ def _build_stratified_indices(y: pd.Series, n_splits: int, seed: int) -> tuple[l
             f"({counts.idxmin()!r}, n={min_count}) cannot support more folds than it has members."
         )
     skf = StratifiedKFold(n_splits=effective_splits, shuffle=True, random_state=seed)
-    folds = [val_idx for _, val_idx in skf.split(np.zeros(len(y)), y)]
-    return folds, warnings
+    return [Fold(train_idx, val_idx) for train_idx, val_idx in skf.split(np.zeros(len(y)), y)], warnings
 
 
-def _build_group_indices(groups: pd.Series, n_splits: int) -> list[np.ndarray]:
+def _build_group_indices(groups: pd.Series, n_splits: int) -> list[Fold]:
     n_groups = groups.nunique()
     if n_groups < n_splits:
         raise ValidationPlanError(
             f"group_column has only {n_groups} distinct group(s), cannot build {n_splits} GroupKFold splits."
         )
     gkf = GroupKFold(n_splits=n_splits)
-    return [val_idx for _, val_idx in gkf.split(np.arange(len(groups)), groups=groups)]
+    return [Fold(train_idx, val_idx) for train_idx, val_idx in gkf.split(np.arange(len(groups)), groups=groups)]
 
 
-def _build_time_split_indices(time_values: pd.Series, n_splits: int) -> list[np.ndarray]:
+def _build_time_split_indices(time_values: pd.Series, n_splits: int) -> list[Fold]:
+    """Walk-forward: fold i trains only on periods strictly earlier than its own
+    held-out period, and validates on exactly that period. n_splits=1 (the historical
+    default) is a single held-out-latest-period split; n_splits>1 adds earlier periods
+    as additional folds, each still only seeing its own past for training — never a
+    later fold's holdout leaking into an earlier fold's training set, and never a
+    fold's own holdout period leaking into its own training set.
+    """
     ordered_unique = np.sort(time_values.dropna().unique())
     if len(ordered_unique) < n_splits + 1:
         raise ValidationPlanError(
@@ -72,8 +94,13 @@ def _build_time_split_indices(time_values: pd.Series, n_splits: int) -> list[np.
             "them as held-out future periods while leaving at least one earlier period to train on."
         )
     holdout_values = ordered_unique[-n_splits:]
-    positions = np.arange(len(time_values))
-    return [positions[(time_values == v).to_numpy()] for v in holdout_values]
+    values = time_values.to_numpy()
+    folds = []
+    for v in holdout_values:
+        val_idx = np.flatnonzero(values == v)
+        train_idx = np.flatnonzero(values < v)
+        folds.append(Fold(train_idx, val_idx))
+    return folds
 
 
 def create_validation(
@@ -127,7 +154,11 @@ def create_validation(
 
     out_dir = ensure_dir(out_dir)
     fold_indices_path = out_dir / f"validation_{validation_id}.npz"
-    np.savez(fold_indices_path, n_rows=n_rows, **{f"fold_{i}": idx for i, idx in enumerate(folds)})
+    arrays = {}
+    for i, fold in enumerate(folds):
+        arrays[f"fold_{i}_train"] = fold.train_idx
+        arrays[f"fold_{i}_val"] = fold.val_idx
+    np.savez(fold_indices_path, n_rows=n_rows, **arrays)
 
     return ValidationPlan(
         validation_id=validation_id,
@@ -142,8 +173,8 @@ def create_validation(
     )
 
 
-def load_fold_indices(plan: ValidationPlan, train_path: str | Path) -> list[np.ndarray]:
-    """Load persisted fold validation-indices, re-checking the train fingerprint first."""
+def load_fold_indices(plan: ValidationPlan, train_path: str | Path) -> list[Fold]:
+    """Load persisted (train, val) fold positions, re-checking the train fingerprint first."""
     current_fingerprint = file_fingerprint(train_path)
     if current_fingerprint != plan.train_fingerprint:
         raise ValidationMismatchError(
@@ -153,7 +184,7 @@ def load_fold_indices(plan: ValidationPlan, train_path: str | Path) -> list[np.n
         )
     with np.load(plan.fold_indices_path) as npz:
         n_rows = int(npz["n_rows"])
-        folds = [npz[f"fold_{i}"] for i in range(plan.n_splits)]
+        folds = [Fold(npz[f"fold_{i}_train"], npz[f"fold_{i}_val"]) for i in range(plan.n_splits)]
     train_n_rows = sum(1 for _ in open(train_path, "r", encoding="utf-8")) - 1
     if train_n_rows != n_rows:
         raise ValidationMismatchError(

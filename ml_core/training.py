@@ -133,7 +133,7 @@ def run_experiment(
         return _result("failed", error_message=f"feature_steps: {type(exc).__name__}: {exc}")
 
     try:
-        fold_val_idx = load_fold_indices(validation_plan, train_path)
+        folds = load_fold_indices(validation_plan, train_path)
         df = pd.read_csv(train_path)
     except Exception as exc:
         return _result("failed", error_message=f"{type(exc).__name__}: {exc}")
@@ -156,18 +156,20 @@ def run_experiment(
         return _result("failed", error_message=f"target encoding failed: {type(exc).__name__}: {exc}")
 
     deadline = start + experiment_config.time_budget_s if experiment_config.time_budget_s else None
-    all_idx = np.arange(len(df))
     fold_metrics: list[float] = []
 
     try:
-        for i, val_idx in enumerate(fold_val_idx):
+        for i, fold in enumerate(folds):
             if deadline is not None and time.monotonic() > deadline:
                 diagnostics["fold_warnings"].append(
                     f"stopped after {i}/{n_requested} folds: time_budget_s exceeded"
                 )
                 break
 
-            train_idx = np.setdiff1d(all_idx, val_idx, assume_unique=False)
+            train_idx, val_idx = fold.train_idx, fold.val_idx
+            if len(train_idx) == 0 or len(val_idx) == 0:
+                diagnostics["fold_warnings"].append(f"fold {i} has an empty train or val set; skipped")
+                continue
             fold_train, fold_val = df.iloc[train_idx], df.iloc[val_idx]
             y_train, y_val = y_all[train_idx], y_all[val_idx]
 

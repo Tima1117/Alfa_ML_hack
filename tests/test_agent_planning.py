@@ -100,7 +100,31 @@ def test_time_split_only_for_a_truly_later_period(tmp_path):
     assert candidates == ["period"]  # noise_flag is flagged too, but test values are not "later"
     spec = infer_task_spec(tmp_path / "train.csv", tmp_path / "data_dictionary.csv", tmp_path / "sample_submission.csv")
     vd = decide_validation(spec, profile, candidates, None)
-    assert (vd.strategy, vd.time_column, vd.n_splits) == ("time_split", "period", 1)
+    # 4 distinct periods in train -> walk-forward over min(3, 4-2)=2 folds (periods 4 and 3 held out,
+    # each trained only on strictly earlier periods — see agent/understand.py's decide_validation).
+    assert (vd.strategy, vd.time_column, vd.n_splits) == ("time_split", "period", 2)
+
+
+def test_time_split_folds_scale_with_available_periods_and_are_capped(tmp_path):
+    def build(n_periods, rows_per_period=4):
+        periods = [p for p in range(1, n_periods + 1) for _ in range(rows_per_period)]
+        n = len(periods)
+        train = pd.DataFrame({"id": range(n), "period": periods, "x": range(n), "y": range(n)})
+        test = pd.DataFrame({"id": range(n, n + 4), "period": [n_periods + 1] * 4, "x": range(4)})
+        dd = pd.DataFrame({"feature": ["id", "period", "x", "y"], "role": ["id", "feature", "feature", "target"],
+                           "dtype": ["numeric"] * 4})
+        for name, df in {"train": train, "test": test, "data_dictionary": dd}.items():
+            df.to_csv(tmp_path / f"{name}_{n_periods}.csv", index=False)
+        pd.DataFrame({"id": test["id"], "y": 0.0}).to_csv(tmp_path / f"sample_submission_{n_periods}.csv", index=False)
+        profile = profile_data(tmp_path / f"train_{n_periods}.csv", tmp_path / f"data_dictionary_{n_periods}.csv", tmp_path / f"test_{n_periods}.csv")
+        candidates = time_split_candidates(profile, tmp_path / f"train_{n_periods}.csv", tmp_path / f"test_{n_periods}.csv")
+        spec = infer_task_spec(tmp_path / f"train_{n_periods}.csv", tmp_path / f"data_dictionary_{n_periods}.csv", tmp_path / f"sample_submission_{n_periods}.csv")
+        return decide_validation(spec, profile, candidates, None)
+
+    assert build(2).n_splits == 1  # too few periods for more than one fold
+    assert build(3).n_splits == 1
+    assert build(5).n_splits == 3  # the real building-energy task's shape (Year_Factor: 5 train periods)
+    assert build(10).n_splits == 3  # capped, not "more periods -> unboundedly more folds"
 
 
 def test_locate_files_platform_layout_and_flat_layout(tmp_path):

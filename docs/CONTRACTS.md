@@ -74,17 +74,37 @@ pred_result = prediction.refit_and_predict(task_spec, config, data_profile, trai
    implemented, since dropping rows would break the fold row-positions), never
    something that happens for you inside `profile_data` or `run_experiment`.
 
-3. **`validation.create_validation(...) -> ValidationPlan`** — persists fold
-   row-positions to an `.npz` file plus a fingerprint of the train file used.
-   Strategies: `"kfold"`, `"stratified_kfold"` (default for classification;
-   auto-caps `n_splits` to the rarest class's count, with a warning — never
-   silently), `"time_split"` (needs `time_column`; last `n_splits` distinct
-   values each become a held-out fold, training on everything earlier),
-   `"group_kfold"` (needs `group_column`).
-   **`validation.load_fold_indices(plan, train_path)` re-checks the
-   fingerprint and row count before returning anything** — reusing a plan
+3. **`validation.create_validation(...) -> ValidationPlan`** — persists each
+   fold's explicit `(train_idx, val_idx)` row-positions to an `.npz` file
+   (`validation.Fold`, not just `val_idx` — see below) plus a fingerprint of
+   the train file used. Strategies: `"kfold"`, `"stratified_kfold"` (default
+   for classification; auto-caps `n_splits` to the rarest class's count, with
+   a warning — never silently), `"time_split"` (needs `time_column`; **walk-
+   forward**: fold *i* trains only on periods strictly earlier than its own
+   held-out period, never on a later fold's holdout or its own), `"group_kfold"`
+   (needs `group_column`).
+   **`validation.load_fold_indices(plan, train_path) -> list[Fold]` re-checks
+   the fingerprint and row count before returning anything** — reusing a plan
    against data it wasn't built for raises `ValidationMismatchError` instead
    of silently scoring against the wrong split.
+
+   `time_split` used to only support a single fold (`n_splits=1`) — not a
+   convenience default, a correctness constraint: computing each fold's
+   training rows as "everything not in this fold's validation set" (which
+   every other strategy uses safely, since they have no ordering) would leak
+   *later* periods into training for any fold but the single last one. Fixed
+   by storing each fold's train rows explicitly instead of deriving them —
+   `n_splits > 1` is now a genuine walk-forward split, confirmed end-to-end:
+   on the real regression task (`Year_Factor`, 5 train periods),
+   `time_split` now runs **3 folds instead of 1** by default
+   (`agent/understand.py`'s `decide_validation`), and on a synthetic
+   imbalanced-binary drill it took the model's own validation estimate from
+   an over-optimistic single-fold 0.70 ROC-AUC down to a 3-fold 0.59 ± 0.08
+   — far closer to the 0.65 the same submission actually scored against the
+   drill's known-truth labels (see `private_drill/README.md`). A single
+   time-ordered fold reflects only that one period's noise, which local
+   search can then quietly overfit to; multiple walk-forward folds catch
+   that instead of hiding it.
 
 4. **`training.run_experiment(...) -> ExperimentResult`** — fits
    `experiment_config.model_name` under K-fold CV, fitting every
