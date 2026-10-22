@@ -188,3 +188,49 @@ def test_xgboost_classification_runs_end_to_end_with_sample_weight(classificatio
     cfg = ExperimentConfig(model_name="xgboost", validation_id=val_plan.validation_id)
     res = run_experiment(task_spec, cfg, val_plan, data_profile, classification_dataset["train"])
     assert res.status == "success", res.error_message
+
+
+def test_ensemble_experiment_soft_votes_regression(regression_dataset, tmp_path):
+    task_spec, data_profile, val_plan = _setup(regression_dataset, tmp_path)
+    ridge = ExperimentConfig(model_name="ridge", validation_id=val_plan.validation_id, preprocessing=PreprocessingConfig(mode="linear"))
+    hgb = ExperimentConfig(model_name="hist_gradient_boosting", validation_id=val_plan.validation_id)
+    ens = ExperimentConfig(model_name="ensemble", validation_id=val_plan.validation_id, ensemble_of=[ridge, hgb])
+    res = run_experiment(task_spec, ens, val_plan, data_profile, regression_dataset["train"])
+    assert res.status == "success", res.error_message
+    assert res.n_folds_completed == 3
+    assert res.diagnostics["component_models"] == ["ridge", "hist_gradient_boosting"]
+
+
+def test_ensemble_experiment_soft_votes_hard_label_classification(classification_dataset, tmp_path):
+    task_spec, data_profile, val_plan = _setup(classification_dataset, tmp_path)
+    a = ExperimentConfig(model_name="xgboost", validation_id=val_plan.validation_id)
+    b = ExperimentConfig(model_name="lightgbm", validation_id=val_plan.validation_id)
+    ens = ExperimentConfig(model_name="ensemble", validation_id=val_plan.validation_id, ensemble_of=[a, b])
+    res = run_experiment(task_spec, ens, val_plan, data_profile, classification_dataset["train"])
+    assert res.status == "success", res.error_message
+    assert res.metric_name == "macro_f1"
+
+
+def test_ensemble_experiment_soft_votes_proba_metric(binary_classification_dataset, tmp_path):
+    task_spec, data_profile, val_plan = _roc_auc_setup(binary_classification_dataset, tmp_path)
+    a = ExperimentConfig(model_name="xgboost", validation_id=val_plan.validation_id)
+    b = ExperimentConfig(model_name="hist_gradient_boosting", validation_id=val_plan.validation_id)
+    ens = ExperimentConfig(model_name="ensemble", validation_id=val_plan.validation_id, ensemble_of=[a, b])
+    res = run_experiment(task_spec, ens, val_plan, data_profile, binary_classification_dataset["train"])
+    assert res.status == "success", res.error_message
+    assert res.metric_name == "roc_auc" and res.metric_value > 0.7  # same sanity bar as the single-model test
+
+
+def test_ensemble_experiment_rejects_fewer_than_two_or_nested_configs(regression_dataset, tmp_path):
+    task_spec, data_profile, val_plan = _setup(regression_dataset, tmp_path)
+    ridge = ExperimentConfig(model_name="ridge", validation_id=val_plan.validation_id, preprocessing=PreprocessingConfig(mode="linear"))
+    hgb = ExperimentConfig(model_name="hist_gradient_boosting", validation_id=val_plan.validation_id)
+
+    one = ExperimentConfig(model_name="ensemble", validation_id=val_plan.validation_id, ensemble_of=[ridge])
+    res = run_experiment(task_spec, one, val_plan, data_profile, regression_dataset["train"])
+    assert res.status == "failed" and "at least 2" in res.error_message
+
+    inner = ExperimentConfig(model_name="ensemble", validation_id=val_plan.validation_id, ensemble_of=[ridge, hgb])
+    nested = ExperimentConfig(model_name="ensemble", validation_id=val_plan.validation_id, ensemble_of=[inner, hgb])
+    res = run_experiment(task_spec, nested, val_plan, data_profile, regression_dataset["train"])
+    assert res.status == "failed" and "nested" in res.error_message

@@ -40,6 +40,8 @@ def refit_and_predict(
     test_path: str | Path,
     out_path: str | Path,
 ) -> PredictionResult:
+    if experiment_config.ensemble_of:
+        return _refit_and_predict_ensemble(task_spec, experiment_config, data_profile, train_path, test_path, out_path)
     try:
         train = pd.read_csv(train_path)
         test = pd.read_csv(test_path)
@@ -202,6 +204,133 @@ def _check_submission(
         warnings.append("test.csv id column is not unique — not an output error, but worth flagging upstream")
 
     return checks, warnings
+
+
+def _refit_and_predict_ensemble(
+    task_spec: TaskSpec,
+    experiment_config: ExperimentConfig,
+    data_profile: DataProfile,
+    train_path: str | Path,
+    test_path: str | Path,
+    out_path: str | Path,
+) -> PredictionResult:
+    """Same contract as refit_and_predict(), for an ExperimentConfig whose ensemble_of is set:
+    fit every component on all of train, soft-vote (average) their test predictions. Mirrors
+    ml_core.training._run_ensemble_experiment()'s per-component logic so the CV estimate that
+    picked this ensemble and the submission it produces are computed the same way."""
+    configs = experiment_config.ensemble_of or []
+    if len(configs) < 2:
+        return PredictionResult(
+            status="failed", output_path=str(out_path),
+            error_message=f"ensemble_of needs at least 2 configs, got {len(configs)}",
+        )
+    try:
+        train = pd.read_csv(train_path)
+        test = pd.read_csv(test_path)
+    except Exception as exc:
+        return PredictionResult(status="failed", output_path=str(out_path), error_message=f"{type(exc).__name__}: {exc}")
+
+    try:
+        check_proba_metric_supported(task_spec)
+    except Exception as exc:
+        return PredictionResult(status="failed", output_path=str(out_path), error_message=f"{type(exc).__name__}: {exc}")
+    needs_proba = metric_needs_proba(task_spec)
+    n_classes = len(task_spec.class_labels or [])
+
+    try:
+        if task_spec.task_type == "classification":
+            class_labels = task_spec.class_labels or []
+            label_to_int = {label: i for i, label in enumerate(class_labels)}
+            unknown = set(train[task_spec.target_column].astype(str).unique()) - set(label_to_int)
+            if unknown:
+                raise ValueError(f"train target has labels outside TaskSpec.class_labels: {unknown}")
+            y = train[task_spec.target_column].astype(str).map(label_to_int).to_numpy()
+        else:
+            y = train[task_spec.target_column].to_numpy(dtype=float)
+
+        component_preds = []
+        for c in configs:
+            if model_registry.requires_linear_mode(c.model_name) and c.preprocessing.mode == "native":
+                raise ValueError(f"model_name={c.model_name!r} needs preprocessing.mode='linear', got 'native'")
+            feature_cols = split_feature_columns(data_profile.columns, c.preprocessing)
+            train_features, test_features = train, test
+            if c.feature_steps:
+                train_features, (test_features,), feature_cols = apply_feature_steps(
+                    c.feature_steps, train, [test], feature_cols, c.preprocessing.high_cardinality_threshold
+                )
+            if c.preprocessing.mode == "native":
+                vocab = CategoryVocabulary().fit(train_features, feature_cols.categorical)
+                X_train = prepare_native_frame(train_features, feature_cols, vocab, c.model_name)
+                X_test = prepare_native_frame(test_features, feature_cols, vocab, c.model_name)
+                cat_names = feature_cols.categorical
+            else:
+                preproc = build_linear_preprocessor(feature_cols, c.preprocessing)
+                X_train = preproc.fit_transform(train_features)
+                X_test = preproc.transform(test_features)
+                cat_names = None
+
+            model = model_registry.build_model(
+                c.model_name, task_spec.task_type, c.hyperparameters, c.random_seed, c.n_jobs, cat_feature_names=cat_names
+            )
+            if task_spec.task_type == "regression":
+                y_fit = forward_target_transform(y, c.preprocessing.target_transform)
+                model.fit(X_train, y_fit)
+                raw_pred = model.predict(X_test)
+                component_preds.append(inverse_target_transform(raw_pred, c.preprocessing.target_transform))
+                continue
+            cw_strategy = c.hyperparameters.get("class_weight_strategy", "sqrt_balanced")
+            sw = model_registry.classification_sample_weight(c.model_name, y, cw_strategy)
+            model.fit(X_train, y, sample_weight=sw)
+            if needs_proba:
+                component_preds.append(positive_class_proba(model, X_test))
+            else:
+                proba = model.predict_proba(X_test)
+                full = np.zeros((len(X_test), n_classes))
+                for j, cls in enumerate(model.classes_):
+                    full[:, int(cls)] = proba[:, j]
+                component_preds.append(full)
+
+        avg = np.mean(component_preds, axis=0)
+        if task_spec.task_type == "regression" or needs_proba:
+            predictions = avg
+        else:
+            class_labels = task_spec.class_labels or []
+            predictions = np.array([class_labels[int(i)] for i in avg.argmax(axis=1)], dtype=object)
+    except Exception as exc:
+        return PredictionResult(status="failed", output_path=str(out_path), error_message=f"{type(exc).__name__}: {exc}")
+
+    id_col = task_spec.id_columns[0]
+    try:
+        submission = pd.DataFrame({id_col: test[id_col].to_numpy()})
+        submission[task_spec.target_column] = predictions
+        submission = submission[task_spec.prediction_requirements.output_columns]
+    except Exception as exc:
+        return PredictionResult(
+            status="failed",
+            output_path=str(out_path),
+            error_message=f"could not assemble output_columns {task_spec.prediction_requirements.output_columns}: {type(exc).__name__}: {exc}",
+        )
+
+    checks, warnings = _check_submission(submission, task_spec, test, id_col)
+    if not all(checks.values()):
+        failed = [name for name, ok in checks.items() if not ok]
+        return PredictionResult(
+            status="failed",
+            output_path=str(out_path),
+            n_rows=len(submission),
+            checks_passed=checks,
+            warnings=warnings,
+            error_message=f"submission failed checks: {failed}",
+        )
+
+    atomic_write_csv(submission, out_path)
+    return PredictionResult(
+        status="success",
+        output_path=str(out_path),
+        n_rows=len(submission),
+        checks_passed=checks,
+        warnings=warnings,
+    )
 
 
 def write_fallback_submission(

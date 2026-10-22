@@ -95,3 +95,37 @@ def test_refit_and_predict_roc_auc_writes_probabilities_not_labels(binary_classi
     assert pd.api.types.is_float_dtype(values)
     assert values.between(0, 1).all()
     assert values.nunique() > 5  # real per-row probabilities, not a constant/collapsed column
+
+
+def test_refit_and_predict_ensemble_regression(regression_dataset, tmp_path):
+    paths = regression_dataset
+    task_spec = infer_task_spec(paths["train"], paths["dict"], paths["sub"])
+    data_profile = profile_data(paths["train"], paths["dict"], paths["test"])
+    ridge = ExperimentConfig(model_name="ridge", validation_id="refit", preprocessing=PreprocessingConfig(mode="linear"))
+    hgb = ExperimentConfig(model_name="hist_gradient_boosting", validation_id="refit")
+    ens = ExperimentConfig(model_name="ensemble", validation_id="refit", ensemble_of=[ridge, hgb])
+    out_path = tmp_path / "submission.csv"
+    result = refit_and_predict(task_spec, ens, data_profile, paths["train"], paths["test"], out_path)
+
+    assert result.status == "success", result.error_message
+    assert all(result.checks_passed.values())
+    submission = pd.read_csv(out_path)
+    test = pd.read_csv(paths["test"])
+    assert list(submission["id"]) == list(test["id"])
+    assert submission["target"].isna().sum() == 0
+
+
+def test_refit_and_predict_ensemble_hard_label_classification(classification_dataset, tmp_path):
+    paths = classification_dataset
+    task_spec = infer_task_spec(paths["train"], paths["dict"], paths["sub"])
+    data_profile = profile_data(paths["train"], paths["dict"], paths["test"])
+    a = ExperimentConfig(model_name="xgboost", validation_id="refit")
+    b = ExperimentConfig(model_name="lightgbm", validation_id="refit")
+    ens = ExperimentConfig(model_name="ensemble", validation_id="refit", ensemble_of=[a, b])
+    out_path = tmp_path / "submission.csv"
+    result = refit_and_predict(task_spec, ens, data_profile, paths["train"], paths["test"], out_path)
+
+    assert result.status == "success", result.error_message
+    assert result.checks_passed.get("labels_within_allowed_set") is True
+    submission = pd.read_csv(out_path)
+    assert submission["label"].isin(["Yes", "Maybe", "No"]).all()

@@ -132,6 +132,13 @@ class ExperimentConfig(_Strict):
     validation_id: str
     time_budget_s: float | None = None
     n_jobs: int | None = None
+    # When set (2+ entries), this config represents a soft-voted average of these component
+    # configs' predictions rather than a single model — model_name/hyperparameters/preprocessing/
+    # feature_steps above are then unused placeholders (kept only so the field stays required).
+    # run_experiment()/refit_and_predict() branch on this at the very top; every other field and
+    # every caller (Executor, agent/research.py's _better()/refit_best()) treats it like any other
+    # ExperimentConfig, so no other code needs to know ensembles exist.
+    ensemble_of: list[ExperimentConfig] | None = None
 
 
 class ExperimentResult(_Strict):

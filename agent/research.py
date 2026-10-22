@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Callable
 
 from ml_core import prediction, profiling, validation
-from ml_core.contracts import ExperimentResult, PreprocessingConfig, TaskSpec
+from ml_core.contracts import ExperimentConfig, ExperimentResult, PreprocessingConfig, TaskSpec
 from ml_core.preprocessing import split_feature_columns
 
 from agent import context, prompts
@@ -208,6 +208,7 @@ class _Researcher:
         self.best: ExperimentResult | None = None
         self.results: list[ExperimentResult] = []
         self.tried: set[str] = set()
+        self.tried_ensembles: set[tuple[str, ...]] = set()
         self.titles: dict[str, str] = {}
         self.notes: list[str] = []
         self.bad_llm_answers = 0
@@ -456,12 +457,18 @@ class _Researcher:
             return self._journal(entry)
         if notes:
             entry.note = "; ".join([entry.note, *notes]).strip("; ")
+        return self._run_config(config, entry, source, estimate=self._estimate_run_s(config.model_name, config.hyperparameters))
+
+    def _run_config(self, config: ExperimentConfig, entry: JournalEntry, source: str, estimate: float) -> JournalEntry:
+        """Shared tail of run_hypothesis() and try_ensemble(): dedup, time-budget check, run,
+        journal, and compare against self.best — identical regardless of how `config` was built,
+        so an ensemble config competes through the exact same bar as any single-model one."""
+        assert self.ctx is not None
         entry.experiment_id = config.experiment_id
         if config.experiment_id in self.tried:
             entry.status, entry.note = "duplicate", "same config as an earlier experiment, skipped"
             return self._journal(entry)
 
-        estimate = self._estimate_run_s(config.model_name, config.hyperparameters)
         available = self.remaining() - self._reserve_s()
         if available < estimate * 1.1:
             entry.status = "skipped"
@@ -487,6 +494,48 @@ class _Researcher:
             f"{result.metric_value} ± {result.metric_std} in {result.duration_s:.0f}s{'  NEW BEST' if entry.new_best else ''}"
         )
         return self._journal(entry)
+
+    def _distinct_best(self, k: int) -> list[ExperimentResult]:
+        """Top-k successful, fully-scored results, one per distinct config (best score wins a tie)."""
+        assert self.task_spec is not None
+        candidates = [r for r in self.results if r.is_fully_comparable]
+        ordered = sorted(candidates, key=lambda r: r.metric_value, reverse=self.task_spec.greater_is_better)
+        seen: set[str] = set()
+        out: list[ExperimentResult] = []
+        for r in ordered:
+            if r.experiment_id in seen:
+                continue
+            seen.add(r.experiment_id)
+            out.append(r)
+            if len(out) >= k:
+                break
+        return out
+
+    def try_ensemble(self, round_no: int) -> JournalEntry | None:
+        """Soft-vote (average) the current top-k distinct results — one extra hypothesis, tried
+        like any other, kept only if _run_config's own _better() check says it actually wins.
+        Naive averaging of models of very different quality can easily be *worse* than the best
+        single model (checked on the real Многоклассовая классификация task: mixing in a much
+        weaker CatBoost/LightGBM run dragged macro F1 down from 0.623 to 0.60-0.61) — but since
+        this only ever replaces self.best when it measurably wins on the same CV folds, there is
+        no downside to trying it regularly; worst case it is just another rejected experiment."""
+        assert self.ctx is not None
+        top = self._distinct_best(3)
+        if len(top) < 2:
+            return None
+        configs = [r.config for r in top]
+        combo_key = tuple(sorted(c.experiment_id or "" for c in configs))
+        if combo_key in self.tried_ensembles:
+            return None
+        self.tried_ensembles.add(combo_key)
+        ensemble_config = ExperimentConfig(
+            model_name="ensemble", validation_id=self.ctx.validation_plan.validation_id, ensemble_of=configs,
+        )
+        ensemble_config = ensemble_config.model_copy(update={"experiment_id": stable_experiment_id(ensemble_config)})
+        estimate = sum(self._estimate_run_s(c.model_name, c.hyperparameters) for c in configs)
+        titles = " + ".join(self.titles.get(r.experiment_id, r.config.model_name) for r in top)
+        entry = JournalEntry(round=round_no, source="ensemble", title=f"ensemble: {titles}", kind="model")
+        return self._run_config(ensemble_config, entry, "ensemble", estimate=estimate)
 
     def _journal(self, entry: JournalEntry) -> JournalEntry:
         self.report.journal.append(asdict(entry))
@@ -605,6 +654,8 @@ class _Researcher:
                     leave_llm(f"{stale} LLM rounds without a new best; switching to the generic playbook")
             elif source != "llm":
                 rest -= 1
+            if round_no % 20 == 0 and not self.out_of_time:
+                self.try_ensemble(round_no)
             if self.best and time.time() - self.last_refit_ts > self.settings.checkpoint_every_s:
                 self.refit_best("checkpoint")
 
