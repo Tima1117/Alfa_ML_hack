@@ -166,10 +166,15 @@ def test_local_search_moves_stay_in_bounds_and_build_valid_configs():
     best = ExperimentConfig(model_name="catboost", hyperparameters={"iterations": 2900, "depth": 10}, validation_id="v")
     hyps = local_search_hypotheses(best, 20, random.Random(1))
     assert hyps
+    saw_max_ctr_complexity = False
     for h in hyps:
         cfg, _ = materialize(h, best, "v")
         assert cfg.model_name == "catboost"
         assert cfg.hyperparameters["iterations"] <= 3000 and 3 <= cfg.hyperparameters["depth"] <= 10
+        if "max_ctr_complexity" in h.hyperparameters:
+            saw_max_ctr_complexity = True
+            assert 1 <= cfg.hyperparameters["max_ctr_complexity"] <= 4
+    assert saw_max_ctr_complexity  # local-search can discover this real speed/quality lever on its own
     assert local_search_hypotheses(ExperimentConfig(model_name="ridge", validation_id="v"), 3, random.Random(0)) == []
 
 

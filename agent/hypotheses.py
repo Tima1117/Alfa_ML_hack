@@ -251,6 +251,16 @@ _SEARCH_SPACE: dict[str, list[tuple[str, float, str, float, float]]] = {
     "catboost": [
         ("learning_rate", 0.08, "log", 0.01, 0.3), ("iterations", 1000, "int_log", 100, 3000),
         ("depth", 6, "int", 3, 10), ("l2_leaf_reg", 3.0, "log", 0.5, 30.0),
+        # Unset, CatBoost picks this itself (observed to resolve to ~4 on this project's real
+        # data) — the combinatorial cost of trying feature *combinations* for categorical target
+        # statistics, which is what makes CatBoost so much slower than XGBoost/LightGBM per fit
+        # with several categorical columns (measured on the real Многоклассовая классификация
+        # task: 1 -> ~257s and best macro_f1 so far; 2 or 4 -> ~410s, no better). Whether that
+        # cost buys anything depends on whether those combinations actually carry signal — on
+        # the real Регрессия task dropping to 1 was faster but measurably worse RMSE (49.4 -> 50.1,
+        # facility_type's combinations with other categoricals mattered there). Genuinely
+        # task-dependent, which is exactly why this is a search-space entry and not a new default.
+        ("max_ctr_complexity", 4, "int", 1, 4),
     ],
     "xgboost": [
         ("learning_rate", 0.3, "log", 0.01, 0.3), ("n_estimators", 100, "int_log", 100, 3000),

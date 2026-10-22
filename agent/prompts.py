@@ -113,6 +113,12 @@ regression models take no class weights. XGBoost classification gets sample weig
 worse than no weighting at all on one real severely imbalanced task), or "none" to disable it. Use only
 parameters of the chosen model's own library (plus this one XGBoost-only exception).
 XGBoost overfits on categorical columns unless max_cat_threshold is set (e.g. 32).
+CatBoost's max_ctr_complexity (unset = it picks, usually high) controls how many categorical
+*combinations* it tries — with several categorical columns this is often why CatBoost takes far
+longer per fit than XGBoost/LightGBM for a similar iteration count, which means it gets tried far
+fewer times in a shared time budget. Setting it to 1 is much faster; whether that costs accuracy
+is dataset-dependent (worth an explicit A/B, not a blind default) — measured faster AND a touch
+better on one real task, faster but measurably worse on another where the combinations mattered.
 
 Strategy: prefer one clear change per hypothesis so the effect is attributable; mix cheap parameter tweaks with
 feature ideas; do not repeat configurations already in the history; learn from failures (their errors are shown);
