@@ -120,7 +120,19 @@ class LLMClient:
                     model,
                     temperature=_env_float("AGENT_LLM_TEMPERATURE", 0.4),
                     max_tokens=_env_int("AGENT_LLM_MAX_OUTPUT_TOKENS", 6144),
-                    timeout_s=_env_float("AGENT_LLM_TIMEOUT_S", 180.0),
+                    # Real calls in this project's own 3h runs averaged ~10-13s each (see
+                    # runs/agent/*/report.md's llm_usage.seconds / calls); 180s let a single
+                    # *broken* (not just slow) connection that never errors, only hangs, burn up
+                    # to ~362s per attempt (timeout_s + retry_wait_s + timeout_s again) before
+                    # openai_transport's own retry gives up, and that can repeat up to
+                    # max_consecutive_errors times before the LLM disables itself for the rest of
+                    # the run — a multi-minute, silent drain on the real time budget with nothing
+                    # to show for it. Lowered to give a slow-but-working call ~5x headroom over
+                    # its observed real-world average while capping a truly broken connection's
+                    # worst case much lower (organizers' feedback on the first real low-scoring
+                    # submission: "проверить вызов LLM" — this is the most plausible way a broken
+                    # LLM call could eat a large, unexplained chunk of budget without crashing).
+                    timeout_s=_env_float("AGENT_LLM_TIMEOUT_S", 60.0),
                     reasoning_tokens=_env_int("AGENT_LLM_REASONING_TOKENS", 3000),
                     no_think=os.environ.get("AGENT_LLM_NO_THINK", "").strip() in ("1", "true", "yes"),
                 ),
