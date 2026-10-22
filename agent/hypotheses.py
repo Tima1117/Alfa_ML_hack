@@ -218,6 +218,8 @@ def playbook_hypotheses(task_spec: TaskSpec, profile: DataProfile, drop_candidat
                    rationale="missingness itself can be informative"),
         Hypothesis(title="count encoding of categoricals", kind="features", add_feature_steps=["count_encode"],
                    rationale="category frequency is a cheap, leak-free signal"),
+        Hypothesis(title="out-of-fold target encoding", kind="features", add_feature_steps=["target_encode"],
+                   rationale="high-cardinality categoricals get a direct, leak-safe summary of their relationship to the target"),
         Hypothesis(title="XGBoost", kind="model", model_name="xgboost",
                    hyperparameters={"n_estimators": 800, "learning_rate": 0.05, "max_depth": 8, "subsample": 0.8,
                                     "colsample_bytree": 0.8, "min_child_weight": 2, "max_cat_threshold": 32},

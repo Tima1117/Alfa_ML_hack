@@ -77,7 +77,10 @@ preprocessing fields (only list the ones you change):
 target_transform "log1p" applies to regression with a non-negative target only.
 
 Feature steps (applied inside each CV fold, fit on training rows only):
-- built-in: {", ".join(BUILTIN_STEPS)}, "drop:<column>"
+- built-in: {", ".join(BUILTIN_STEPS)}, "target_encode", "drop:<column>"
+  "target_encode" adds an out-of-fold mean-target encoding for every categorical column (one
+  column per class for classification) — the leak-safe way to get a category's relationship to
+  the target itself, worth trying on high-cardinality categoricals in particular.
 - your own code via "feature_code": a Python function
     def make_features(df):  # df = feature columns only (no target, no id), one row per object
         ...

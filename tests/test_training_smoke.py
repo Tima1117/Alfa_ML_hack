@@ -190,6 +190,23 @@ def test_xgboost_classification_runs_end_to_end_with_sample_weight(classificatio
     assert res.status == "success", res.error_message
 
 
+def test_target_encode_feature_step_runs_end_to_end(regression_dataset, tmp_path):
+    task_spec, data_profile, val_plan = _setup(regression_dataset, tmp_path)
+    cfg = ExperimentConfig(model_name="hist_gradient_boosting", validation_id=val_plan.validation_id,
+                            feature_steps=["target_encode", "count_encode"])
+    res = run_experiment(task_spec, cfg, val_plan, data_profile, regression_dataset["train"])
+    assert res.status == "success", res.error_message
+    assert res.n_folds_completed == 3
+
+
+def test_target_encode_feature_step_runs_end_to_end_classification(classification_dataset, tmp_path):
+    task_spec, data_profile, val_plan = _setup(classification_dataset, tmp_path)
+    cfg = ExperimentConfig(model_name="xgboost", validation_id=val_plan.validation_id,
+                            feature_steps=["target_encode"])
+    res = run_experiment(task_spec, cfg, val_plan, data_profile, classification_dataset["train"])
+    assert res.status == "success", res.error_message
+
+
 def test_ensemble_experiment_soft_votes_regression(regression_dataset, tmp_path):
     task_spec, data_profile, val_plan = _setup(regression_dataset, tmp_path)
     ridge = ExperimentConfig(model_name="ridge", validation_id=val_plan.validation_id, preprocessing=PreprocessingConfig(mode="linear"))

@@ -97,6 +97,20 @@ def test_refit_and_predict_roc_auc_writes_probabilities_not_labels(binary_classi
     assert values.nunique() > 5  # real per-row probabilities, not a constant/collapsed column
 
 
+def test_refit_and_predict_target_encode(regression_dataset, tmp_path):
+    paths = regression_dataset
+    task_spec = infer_task_spec(paths["train"], paths["dict"], paths["sub"])
+    data_profile = profile_data(paths["train"], paths["dict"], paths["test"])
+    cfg = ExperimentConfig(model_name="hist_gradient_boosting", validation_id="refit", feature_steps=["target_encode"])
+    out_path = tmp_path / "submission.csv"
+    result = refit_and_predict(task_spec, cfg, data_profile, paths["train"], paths["test"], out_path)
+
+    assert result.status == "success", result.error_message
+    assert all(result.checks_passed.values())
+    submission = pd.read_csv(out_path)
+    assert submission["target"].isna().sum() == 0
+
+
 def test_refit_and_predict_ensemble_regression(regression_dataset, tmp_path):
     paths = regression_dataset
     task_spec = infer_task_spec(paths["train"], paths["dict"], paths["sub"])

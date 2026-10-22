@@ -30,6 +30,8 @@ from ml_core.contracts import DataProfile, ExperimentConfig, ExperimentResult, T
 from ml_core.errors import UnsupportedTaskTypeError
 from ml_core.experiment_log import record as log_record
 from ml_core.feature_steps import apply_feature_steps, parse_steps
+from ml_core.target_encoding import STEP_NAME as TARGET_ENCODE_STEP
+from ml_core.target_encoding import maybe_apply_target_encoding
 from ml_core.io_utils import config_hash
 from ml_core.metrics import build_task_metric_fn, check_proba_metric_supported, metric_needs_proba
 from ml_core.preprocessing import (
@@ -132,7 +134,10 @@ def run_experiment(
         )
 
     try:
-        parse_steps(experiment_config.feature_steps)
+        # "target_encode" is intercepted by maybe_apply_target_encoding() before the remaining
+        # steps ever reach apply_feature_steps()/parse_steps() — see ml_core/target_encoding.py's
+        # module docstring for why it isn't a regular FeatureStep.
+        parse_steps([s for s in experiment_config.feature_steps if s != TARGET_ENCODE_STEP])
     except Exception as exc:
         return _result("failed", error_message=f"feature_steps: {type(exc).__name__}: {exc}")
 
@@ -177,15 +182,19 @@ def run_experiment(
             fold_train, fold_val = df.iloc[train_idx], df.iloc[val_idx]
             y_train, y_val = y_all[train_idx], y_all[val_idx]
 
-            fold_cols = feature_cols
-            if experiment_config.feature_steps:
+            remaining_steps, fold_train, (fold_val,), fold_cols = maybe_apply_target_encoding(
+                experiment_config.feature_steps, fold_train, y_train, [fold_val], feature_cols,
+                task_spec.task_type, len(task_spec.class_labels or []), experiment_config.random_seed,
+            )
+            if remaining_steps:
                 fold_train, (fold_val,), fold_cols = apply_feature_steps(
-                    experiment_config.feature_steps,
+                    remaining_steps,
                     fold_train,
                     [fold_val],
-                    feature_cols,
+                    fold_cols,
                     experiment_config.preprocessing.high_cardinality_threshold,
                 )
+            if experiment_config.feature_steps:
                 diagnostics["n_features_after_steps"] = len(fold_cols.numeric) + len(fold_cols.categorical)
 
             mode = experiment_config.preprocessing.mode
@@ -254,10 +263,12 @@ def _fit_component_fold(task_spec, c: ExperimentConfig, data_profile, fold_train
     hard-label classification: full per-class probability matrix, so averaging stays a real
     soft vote instead of averaging incomparable integer class indices)."""
     feature_cols = split_feature_columns(data_profile.columns, c.preprocessing)
-    fold_cols = feature_cols
-    if c.feature_steps:
+    remaining_steps, fold_train, (fold_val,), fold_cols = maybe_apply_target_encoding(
+        c.feature_steps, fold_train, y_train, [fold_val], feature_cols, task_spec.task_type, n_classes, c.random_seed,
+    )
+    if remaining_steps:
         fold_train, (fold_val,), fold_cols = apply_feature_steps(
-            c.feature_steps, fold_train, [fold_val], feature_cols, c.preprocessing.high_cardinality_threshold
+            remaining_steps, fold_train, [fold_val], fold_cols, c.preprocessing.high_cardinality_threshold
         )
     if c.preprocessing.mode == "native":
         vocab = CategoryVocabulary().fit(fold_train, fold_cols.categorical)
@@ -354,7 +365,7 @@ def _run_ensemble_experiment(
         if model_registry.requires_linear_mode(c.model_name) and c.preprocessing.mode == "native":
             return _result("failed", error_message=f"{c.model_name} needs preprocessing.mode='linear'")
         try:
-            parse_steps(c.feature_steps)
+            parse_steps([s for s in c.feature_steps if s != TARGET_ENCODE_STEP])
         except Exception as exc:
             return _result("failed", error_message=f"{c.model_name} feature_steps: {type(exc).__name__}: {exc}")
 

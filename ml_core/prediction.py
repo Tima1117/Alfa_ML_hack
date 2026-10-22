@@ -19,6 +19,7 @@ import pandas as pd
 from ml_core import model_registry
 from ml_core.contracts import DataProfile, ExperimentConfig, PredictionResult, TaskSpec
 from ml_core.feature_steps import apply_feature_steps
+from ml_core.target_encoding import maybe_apply_target_encoding
 from ml_core.io_utils import atomic_write_csv
 from ml_core.metrics import check_proba_metric_supported, metric_needs_proba
 from ml_core.model_registry import positive_class_proba
@@ -81,11 +82,15 @@ def refit_and_predict(
             y = train[task_spec.target_column].to_numpy(dtype=float)
 
         train_features, test_features = train, test
-        if experiment_config.feature_steps:
+        remaining_steps, train_features, (test_features,), feature_cols = maybe_apply_target_encoding(
+            experiment_config.feature_steps, train_features, y, [test_features], feature_cols,
+            task_spec.task_type, len(task_spec.class_labels or []), experiment_config.random_seed,
+        )
+        if remaining_steps:
             train_features, (test_features,), feature_cols = apply_feature_steps(
-                experiment_config.feature_steps,
-                train,
-                [test],
+                remaining_steps,
+                train_features,
+                [test_features],
                 feature_cols,
                 experiment_config.preprocessing.high_cardinality_threshold,
             )
@@ -254,9 +259,13 @@ def _refit_and_predict_ensemble(
                 raise ValueError(f"model_name={c.model_name!r} needs preprocessing.mode='linear', got 'native'")
             feature_cols = split_feature_columns(data_profile.columns, c.preprocessing)
             train_features, test_features = train, test
-            if c.feature_steps:
+            remaining_steps, train_features, (test_features,), feature_cols = maybe_apply_target_encoding(
+                c.feature_steps, train_features, y, [test_features], feature_cols,
+                task_spec.task_type, n_classes, c.random_seed,
+            )
+            if remaining_steps:
                 train_features, (test_features,), feature_cols = apply_feature_steps(
-                    c.feature_steps, train, [test], feature_cols, c.preprocessing.high_cardinality_threshold
+                    remaining_steps, train_features, [test_features], feature_cols, c.preprocessing.high_cardinality_threshold
                 )
             if c.preprocessing.mode == "native":
                 vocab = CategoryVocabulary().fit(train_features, feature_cols.categorical)
