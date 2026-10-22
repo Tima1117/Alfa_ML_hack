@@ -79,6 +79,7 @@ def build_model(
         )
 
     params = dict(hyperparameters)
+    params.pop("class_weight_strategy", None)  # consumed separately — see classification_sample_weight()
     n_jobs = n_jobs if n_jobs is not None else -1
 
     if model_name == "baseline":
@@ -161,6 +162,46 @@ def build_model(
         return XGBClassifier(**params)
 
     raise UnsupportedTaskTypeError(f"model_name {model_name!r} has no builder implemented")
+
+
+def classification_sample_weight(model_name: str, y, strategy: str | None = "sqrt_balanced") -> "np.ndarray | None":
+    """Every classifier this registry builds balances classes by default — class_weight=
+    'balanced' (logistic_regression, random_forest, hist_gradient_boosting, lightgbm) or
+    auto_class_weights='Balanced' (catboost) — except xgboost: XGBClassifier has no such
+    constructor parameter at all. The documented way to get the same effect for xgboost is
+    sample_weight at fit time; every other classifier's .fit() accepts sample_weight=None as
+    a harmless no-op, so this is safe to pass through unconditionally from each call site.
+
+    strategy picks how aggressively to reweight (checked on the real UNSW-NB15 multiclass
+    task, 65 to 28000 rows/class, 3-fold macro F1):
+      - "balanced" (sklearn's compute_sample_weight): inverse class frequency. Measured
+        *worse* than no weighting at all here (0.596 vs 0.611 mean macro F1) — it fixes the
+        rarest class (Worms 0.49 -> 0.63) by overcorrecting so hard that mid-sized minority
+        classes (Analysis, Backdoor) collapse (0.23 -> 0.11, 0.21 -> 0.08).
+      - "sqrt_balanced" (sqrt of inverse class frequency, the default): a gentler version of
+        the same idea. Measured *better* than no weighting (0.618 vs 0.611 mean macro F1) —
+        still helps Worms (0.49 -> 0.58) without wrecking the mid-sized classes as badly.
+      - None / "none": no reweighting (xgboost's original, unprotected behavior).
+    A hypothesis (LLM or local-search) can still override this per experiment via
+    hyperparameters={"class_weight_strategy": ...} — build_model() pops that key out before
+    constructing the estimator (xgboost has no matching constructor kwarg), and training.py/
+    prediction.py read it back from the original config here, where y is available to weight.
+    """
+    if model_name != "xgboost" or not strategy or strategy == "none":
+        return None
+    if strategy == "balanced":
+        from sklearn.utils.class_weight import compute_sample_weight
+
+        return compute_sample_weight("balanced", y)
+    if strategy == "sqrt_balanced":
+        import numpy as np
+
+        y = np.asarray(y)
+        classes, inverse = np.unique(y, return_inverse=True)
+        counts = np.bincount(inverse)
+        weight_per_class = np.sqrt(len(y) / (len(classes) * counts))
+        return weight_per_class[inverse]
+    raise ValueError(f"unknown class_weight_strategy {strategy!r}")
 
 
 def positive_class_proba(model, X) -> "np.ndarray":

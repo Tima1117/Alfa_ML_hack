@@ -211,10 +211,14 @@ def run_experiment(
                 pred_val = model.predict(X_val)
                 pred_val = inverse_target_transform(pred_val, experiment_config.preprocessing.target_transform)
             elif needs_proba:
-                model.fit(X_train, y_train)
+                cw_strategy = experiment_config.hyperparameters.get("class_weight_strategy", "sqrt_balanced")
+                sw = model_registry.classification_sample_weight(experiment_config.model_name, y_train, cw_strategy)
+                model.fit(X_train, y_train, sample_weight=sw)
                 pred_val = positive_class_proba(model, X_val)
             else:
-                model.fit(X_train, y_train)
+                cw_strategy = experiment_config.hyperparameters.get("class_weight_strategy", "sqrt_balanced")
+                sw = model_registry.classification_sample_weight(experiment_config.model_name, y_train, cw_strategy)
+                model.fit(X_train, y_train, sample_weight=sw)
                 pred_val = model.predict(X_val)
 
             fold_metrics.append(float(metric_fn(y_val, pred_val)))

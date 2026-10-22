@@ -115,10 +115,14 @@ def refit_and_predict(
             raw_pred = model.predict(X_test)
             predictions = inverse_target_transform(raw_pred, experiment_config.preprocessing.target_transform)
         elif needs_proba:
-            model.fit(X_train, y)
+            cw_strategy = experiment_config.hyperparameters.get("class_weight_strategy", "sqrt_balanced")
+            sw = model_registry.classification_sample_weight(experiment_config.model_name, y, cw_strategy)
+            model.fit(X_train, y, sample_weight=sw)
             predictions = positive_class_proba(model, X_test)
         else:
-            model.fit(X_train, y)
+            cw_strategy = experiment_config.hyperparameters.get("class_weight_strategy", "sqrt_balanced")
+            sw = model_registry.classification_sample_weight(experiment_config.model_name, y, cw_strategy)
+            model.fit(X_train, y, sample_weight=sw)
             pred_int = model.predict(X_test)
             class_labels = task_spec.class_labels or []
             predictions = np.array([class_labels[int(i)] for i in pred_int], dtype=object)

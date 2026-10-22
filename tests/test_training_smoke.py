@@ -1,4 +1,7 @@
+import numpy as np
+
 from ml_core.contracts import ExperimentConfig, PreprocessingConfig
+from ml_core.model_registry import classification_sample_weight
 from ml_core.profiling import infer_task_spec, profile_data
 from ml_core.training import run_experiment
 from ml_core.validation import create_validation
@@ -150,3 +153,38 @@ def test_roc_auc_on_multiclass_task_is_unsupported_not_a_crash(classification_da
     res = run_experiment(task_spec, cfg, val_plan, data_profile, classification_dataset["train"])
     assert res.status == "unsupported"
     assert "roc_auc" in res.error_message
+
+
+def test_classification_sample_weight_balances_xgboost_only():
+    """Every other classifier this registry builds balances classes through its own
+    constructor param (class_weight='balanced' or catboost's auto_class_weights) — xgboost
+    has no such param, so it alone needs sample_weight at fit time to get the same effect.
+
+    strategy defaults to 'sqrt_balanced', not sklearn's plain 'balanced': measured on the
+    real UNSW-NB15 multiclass task (65 to 28000 rows/class), plain 'balanced' actually made
+    mean macro F1 *worse* (0.611 -> 0.596) by overcorrecting so hard that mid-sized minority
+    classes collapsed while fixing only the rarest one; 'sqrt_balanced' was a net improvement
+    (0.611 -> 0.618) — see classification_sample_weight()'s docstring for the full numbers."""
+    y = np.array([0, 0, 0, 0, 0, 0, 0, 0, 1, 1])  # 8:2 imbalance
+
+    assert classification_sample_weight("catboost", y) is None
+    assert classification_sample_weight("lightgbm", y) is None
+    assert classification_sample_weight("logistic_regression", y) is None
+    assert classification_sample_weight("xgboost", y, strategy=None) is None
+    assert classification_sample_weight("xgboost", y, strategy="none") is None
+
+    sw_default = classification_sample_weight("xgboost", y)
+    sw_sqrt = classification_sample_weight("xgboost", y, strategy="sqrt_balanced")
+    sw_balanced = classification_sample_weight("xgboost", y, strategy="balanced")
+    for sw in (sw_default, sw_sqrt, sw_balanced):
+        assert sw is not None and len(sw) == len(y)
+        assert sw[y == 1][0] > sw[y == 0][0]  # the minority class gets the heavier weight
+    assert np.array_equal(sw_default, sw_sqrt)  # the default strategy is sqrt_balanced
+    assert sw_balanced[y == 1][0] > sw_sqrt[y == 1][0]  # plain balanced overcorrects harder
+
+
+def test_xgboost_classification_runs_end_to_end_with_sample_weight(classification_dataset, tmp_path):
+    task_spec, data_profile, val_plan = _setup(classification_dataset, tmp_path)
+    cfg = ExperimentConfig(model_name="xgboost", validation_id=val_plan.validation_id)
+    res = run_experiment(task_spec, cfg, val_plan, data_profile, classification_dataset["train"])
+    assert res.status == "success", res.error_message

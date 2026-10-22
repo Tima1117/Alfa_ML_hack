@@ -104,7 +104,11 @@ Threads, seeds, verbosity and GPU options are set by the harness - do not set th
 are clamped. Keep the time budget in mind: the history shows how long each run took.
 Harness facts: for classification only, models already use balanced class weights (class_weight "balanced",
 CatBoost auto_class_weights "Balanced"; set them to null to turn off), so LightGBM is_unbalance changes nothing;
-regression models take no class weights. Use only parameters of the chosen model's own library.
+regression models take no class weights. XGBoost classification gets sample weighting too, via hyperparameter
+"class_weight_strategy" (not a real XGBoost param — handled separately): default "sqrt_balanced" (gentle),
+"balanced" (full inverse-frequency, can overcorrect and hurt macro F1 on mid-sized minority classes — measured
+worse than no weighting at all on one real severely imbalanced task), or "none" to disable it. Use only
+parameters of the chosen model's own library (plus this one XGBoost-only exception).
 XGBoost overfits on categorical columns unless max_cat_threshold is set (e.g. 32).
 
 Strategy: prefer one clear change per hypothesis so the effect is attributable; mix cheap parameter tweaks with
