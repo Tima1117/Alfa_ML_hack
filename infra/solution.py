@@ -111,6 +111,21 @@ def check_submission(task, output):
 
 def child_main(args):
     sys.path.insert(0, str(Path(args.runtime).resolve()))
+    # Defensive against a name collision: if the platform's own harness (or anything else that
+    # runs in this interpreter before us) already imported something called "agent" or
+    # "ml_core" — plausible names for either of those on an AI-agent hackathon platform —
+    # Python's import system resolves "import agent.research" from sys.modules' cache FIRST,
+    # before ever consulting sys.path, so our own sys.path.insert() above would silently never
+    # take effect: our bundled code would sit on disk, genuinely different between submissions,
+    # while some unrelated already-cached module actually ran instead — and no local test can
+    # ever catch this, since nothing in *our* process pre-imports anything by those names.
+    # Evicting any such entries forces every subsequent "import agent"/"import ml_core" (direct
+    # or via submodule) to resolve fresh against our prepended sys.path[0]. A no-op if there was
+    # no collision; cheap enough to always run, so — same principle as the CPU-pinning guard
+    # right below — there is no reason not to run it unconditionally, before anything else.
+    for _name in list(sys.modules):
+        if _name == "agent" or _name.startswith("agent.") or _name == "ml_core" or _name.startswith("ml_core."):
+            del sys.modules[_name]
     try:
         if hasattr(os, "sched_getaffinity"):
             available = sorted(os.sched_getaffinity(0))
@@ -128,6 +143,23 @@ def child_main(args):
         pass
     # Imports stay in the child: startup/model failures cannot crash the observer.
     from agent.research import run_research
+    try:
+        # Evidence for the sys.modules-collision hypothesis above, in case logs ever become
+        # available: where "agent"/"ml_core" (and this file's own __file__) actually resolved
+        # from. If these paths are not under args.runtime, something else shadowed our bundle.
+        import agent as _agent_mod
+        import ml_core as _ml_core_mod
+        (Path(args.work) / "infra_import_origins.json").write_text(
+            json.dumps({
+                "runtime_dir": str(Path(args.runtime).resolve()),
+                "agent___file__": getattr(_agent_mod, "__file__", None),
+                "ml_core___file__": getattr(_ml_core_mod, "__file__", None),
+                "this_file": str(Path(__file__).resolve()),
+            }),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
     try:
         from agent.task_files import locate_task_files
         from ml_core.profiling import infer_task_spec

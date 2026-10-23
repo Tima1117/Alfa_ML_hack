@@ -231,25 +231,47 @@ def test_child_main_still_calls_run_research_if_cpu_pinning_is_denied(tmp_path, 
     monkeypatch.setattr(os, "sched_setaffinity", denied, raising=False)
     monkeypatch.setenv("AGENT_N_JOBS", "1")
 
-    import agent.research
     from types import SimpleNamespace
 
-    called = {}
-
-    def fake_run_research(task_md, deadline_ts=None, work_dir=None, **kwargs):
-        called["ran"] = True
-        return SimpleNamespace(status="ok", task_type="regression", metric_name="rmse")
-
-    monkeypatch.setattr(agent.research, "run_research", fake_run_research)
+    # A real (if tiny) dataset, not a monkeypatched run_research: child_main() now evicts any
+    # pre-cached "agent"/"ml_core" from sys.modules before its own import specifically so a
+    # same-named module imported earlier in this process (the production concern this guards
+    # against) can never silently shadow the real one — which also means an in-memory monkeypatch
+    # of an already-imported agent.research.run_research no longer reaches child_main()'s own
+    # fresh import of it. Enough rows for the default validation split to actually run is what
+    # proves run_research() was reached, instead of a flag a mock would have set.
+    import random
+    rng = random.Random(0)
+    rows = [(i, rng.uniform(0, 10), rng.uniform(0, 10)) for i in range(1, 31)]
+    train_csv = "id,x,y\n" + "".join(f"{i},{x:.3f},{y:.3f}\n" for i, x, y in rows)
+    test_csv = "id,x\n" + "".join(f"{i},{x:.3f}\n" for i, x, _ in rows[:5])
 
     task_md = tmp_path / "task.md"
-    task_md.write_text("Regression.", encoding="utf-8")
-    (tmp_path / "train.csv").write_text("id,x,y\n1,2,3\n")
-    (tmp_path / "test.csv").write_text("id,x\n2,3\n")
-    (tmp_path / "data_dictionary.csv").write_text("feature,role,dtype\nid,id,int\nx,feature,float\ny,target,float\n")
-    (tmp_path / "sample_submission.csv").write_text("id,y\n2,0\n")
+    task_md.write_text("Regression. RMSE.", encoding="utf-8")
+    (tmp_path / "train.csv").write_text(train_csv, encoding="utf-8")
+    (tmp_path / "test.csv").write_text(test_csv, encoding="utf-8")
+    (tmp_path / "data_dictionary.csv").write_text("feature,role,dtype\nid,id,int\nx,feature,float\ny,target,float\n", encoding="utf-8")
+    (tmp_path / "sample_submission.csv").write_text("id,y\n" + "".join(f"{i},0\n" for i, _, _ in rows[:5]), encoding="utf-8")
     work = tmp_path / "agent_work"
 
-    args = SimpleNamespace(runtime=str(ROOT), work=str(work), task=str(task_md), deadline=None)
-    entry.child_main(args)
-    assert called.get("ran") is True  # the real crash point: this used to never be reached
+    args = SimpleNamespace(runtime=str(ROOT), work=str(work), task=str(task_md), deadline=time.time() + 120)
+    # child_main()'s own sys.modules eviction (see infra/solution.py) is meant for its real
+    # use: a freshly spawned, single-purpose subprocess on the platform. Calling it in-process
+    # here, in the same interpreter as every other test, means that eviction + child_main()'s
+    # own fresh re-import would otherwise leave a second, independent copy of agent/ml_core's
+    # modules (and classes) resident for the rest of this pytest session — breaking isinstance
+    # checks in whichever test happens to run next. Snapshot/restore keeps that contained to
+    # just this test, without weakening what child_main() actually does.
+    is_relevant = lambda name: name == "agent" or name.startswith("agent.") or name == "ml_core" or name.startswith("ml_core.")
+    before = {k: v for k, v in sys.modules.items() if is_relevant(k)}
+    try:
+        entry.child_main(args)
+        # the real crash point this guards: without reaching run_research(), no submission exists
+        assert (tmp_path / "submission.csv").is_file()
+        report = json.loads((work / "report.json").read_text(encoding="utf-8"))
+        assert report["status"] == "ok"
+    finally:
+        for k in list(sys.modules):
+            if is_relevant(k) and k not in before:
+                del sys.modules[k]
+        sys.modules.update(before)
