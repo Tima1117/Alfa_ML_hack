@@ -86,8 +86,8 @@ class LLMClient:
         transport: Transport,
         *,
         model: str = "unknown",
-        max_calls: int = 40,
-        max_total_tokens: int = 400_000,
+        max_calls: int = 300,
+        max_total_tokens: int = 3_000_000,
         max_consecutive_errors: int = 3,
     ) -> None:
         self._transport = transport
@@ -137,8 +137,14 @@ class LLMClient:
                     no_think=os.environ.get("AGENT_LLM_NO_THINK", "").strip() in ("1", "true", "yes"),
                 ),
                 model=model,
-                max_calls=_env_int("AGENT_LLM_MAX_CALLS", 40),
-                max_total_tokens=_env_int("AGENT_LLM_MAX_TOKENS", 400_000),
+                # Real cost, not call/token count, is the actual constraint (team's shared daily
+                # budget — see docs/INFRASTRUCTURE.md): this project's own 3h real runs cost
+                # ~₽9-14 for 13-27 calls, nowhere near a 600₽/day budget. The old defaults (40
+                # calls, 400k tokens) could themselves become the binding limit over a long run
+                # well before real money mattered — raised generously; a genuinely runaway loop
+                # is still bounded by the wall-clock deadline regardless of these caps.
+                max_calls=_env_int("AGENT_LLM_MAX_CALLS", 300),
+                max_total_tokens=_env_int("AGENT_LLM_MAX_TOKENS", 3_000_000),
             )
         except Exception:
             return None
@@ -146,6 +152,18 @@ class LLMClient:
     @property
     def available(self) -> bool:
         return self.disabled_reason is None
+
+    def reset_after_cooldown(self) -> None:
+        """Clear a disable so the agent can try the LLM again after sitting out a few rounds.
+
+        Call only for a disable the caller has already judged transient (a run of consecutive
+        errors, or a few unusable JSON answers — see agent/research.py's _disable_llm, which
+        decides this). Resetting after "call budget spent" or "token budget spent" would be
+        pointless and immediately re-trigger the same check on the very next call, since usage
+        counters never decrease; this method doesn't gate on that itself; the caller does.
+        """
+        self.disabled_reason = None
+        self._consecutive_errors = 0
 
     def _check_budget(self) -> None:
         if self.disabled_reason:

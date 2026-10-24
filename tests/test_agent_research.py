@@ -80,7 +80,9 @@ def test_research_survives_a_broken_llm_and_a_tight_deadline(regression_dataset,
         task_md, time.time() + 300, llm=LLMClient(broken, max_consecutive_errors=1), work_dir=tmp_path / "w1",
         settings=_settings(),
     )
-    assert report.status == "ok" and report.llm_mode.startswith("disabled")
+    # a connection-error disable is treated as transient (cooldown/retry), not permanent — see
+    # agent/research.py's _disable_llm; it never got a chance to recover within these 4 rounds.
+    assert report.status == "ok" and report.llm_mode.startswith("cooling down")
     assert report.best_metric is not None
 
     # deadline already passed: only the fallback submission, still status ok and a valid file
@@ -122,4 +124,40 @@ def test_llm_gets_another_turn_after_the_playbook(regression_dataset, tmp_path):
 
     assert report.status == "ok", report.error
     assert report.llm_usage["calls"] == 3
+
+
+def test_llm_recovers_after_a_run_of_consecutive_errors_instead_of_staying_off_forever(
+    regression_dataset, tmp_path
+):
+    """Real finding (2026-10-24): a run that hits max_consecutive_errors used to disable the LLM
+    for the rest of that run permanently (self.llm = None), even for a transient problem (e.g. a
+    few bad answers from a flaky connection) — losing any further LLM benefit for the remaining
+    hours of a real submission over one bad patch. A disable that isn't budget-related should
+    instead cool down (same cycle as "LLM decided to stop") and get retried later."""
+    hyp_batch = json.dumps({"analysis": "retrying", "hypotheses": [{"title": "t", "kind": "params"}]})
+    stop = json.dumps({"analysis": "done", "hypotheses": [], "stop": True})
+    calls = {"n": 0}
+
+    def flaky(messages):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return json.dumps({"metric_name": "rmse"}), 10, 5  # prepare()'s "understanding" call
+        if calls["n"] in (2, 3, 4):  # exactly max_consecutive_errors: disables, but transiently
+            raise RuntimeError("simulated flaky connection")
+        return (hyp_batch if calls["n"] == 5 else stop), 10, 5  # recovers after the cooldown
+
+    llm = LLMClient(flaky, model="scripted", max_consecutive_errors=3)
+    settings = _settings()
+    settings.max_rounds, settings.hypotheses_per_round, settings.llm_rest_rounds = 15, 1, 2
+    logs: list[str] = []
+    report = run_research(task_md := _task_md(regression_dataset, "RMSE"), time.time() + 300,
+                           llm=llm, work_dir=tmp_path / "work", settings=settings, log=logs.append)
+
+    assert report.status == "ok", report.error
+    assert any("pausing" in n.lower() for n in report.notes)  # the transient disable was logged
+    assert "llm" in [j["source"] for j in report.journal]  # at least one round sourced from the LLM
+    # the real assertion: the LLM made a successful call *after* the error streak (the
+    # "understanding" call plus at least one recovered hypothesis call), proving it was retried
+    # after the cooldown rather than left off for the rest of the run.
+    assert report.llm_usage["calls"] >= 2
     assert any("back to the LLM" in line for line in logs)

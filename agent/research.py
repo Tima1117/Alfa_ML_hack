@@ -391,9 +391,23 @@ class _Researcher:
     def _disable_llm(self, reason: str) -> None:
         if self.llm is not None:
             self.report.llm_usage = self._usage()
-        self.report.llm_mode = f"disabled mid-run: {reason}"
-        self.notes.append(f"LLM disabled: {reason}")
-        self.llm = None
+        # "call/token budget spent" is this client's own self-imposed cap (see LLMClient) — real
+        # money is nowhere near as tight (team's shared daily ₽ budget: a 3h real run costs
+        # single-digit ₽, see docs/INFRASTRUCTURE.md), but retrying after hitting it would be
+        # pointless anyway: usage counters never decrease, so the very next call re-triggers the
+        # same check immediately. "LLM budget exceeded" (real ruble budget) obviously shouldn't
+        # retry either. Everything else here (a run of consecutive errors, a few unusable JSON
+        # answers) is transient — keep self.llm and let the round loop's cooldown/"back to the
+        # LLM" cycle (already used for "LLM decided to stop") give it another chance later,
+        # instead of losing the rest of a multi-hour run to one bad patch of answers.
+        permanent = self.llm is None or "budget" in reason.lower()
+        if permanent:
+            self.report.llm_mode = f"disabled mid-run: {reason}"
+            self.notes.append(f"LLM disabled: {reason}")
+            self.llm = None
+        else:
+            self.report.llm_mode = f"cooling down after: {reason}"
+            self.notes.append(f"LLM pausing (will retry after a cooldown): {reason}")
 
     def _usage(self) -> dict:
         if self.llm is None:
@@ -609,6 +623,8 @@ class _Researcher:
                 self.log("time budget for experiments is used up")
                 break
             if not llm_phase and self.llm is not None and rest <= 0 and len(self.results) > n_at_leave:
+                self.llm.reset_after_cooldown()  # no-op if it wasn't actually disabled
+                self.bad_llm_answers = 0
                 self.log(f"back to the LLM: {len(self.results) - n_at_leave} new experiments since it last proposed")
                 llm_phase, stale, patience = True, 0, self.settings.return_patience_rounds
             source = "playbook"
@@ -625,9 +641,11 @@ class _Researcher:
                 except (LLMUnavailable, LLMBadResponse) as exc:
                     self._llm_problem(exc, f"round {round_no}")
                     if self.llm is None:
-                        llm_phase = False
+                        llm_phase = False  # permanent (budget-related): nothing more to do
+                    elif not self.llm.available:
+                        leave_llm(f"pausing LLM: {exc}")  # transient: cooldown, retry later
                     else:
-                        continue  # one unusable answer: ask again next round
+                        continue  # one unusable answer, not yet enough to disable: ask again next round
             if not hyps:
                 source = "playbook"
                 hyps = [playbook.popleft() for _ in range(min(self.settings.hypotheses_per_round, len(playbook)))]
