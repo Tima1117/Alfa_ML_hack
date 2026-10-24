@@ -86,8 +86,8 @@ class LLMClient:
         transport: Transport,
         *,
         model: str = "unknown",
-        max_calls: int = 300,
-        max_total_tokens: int = 3_000_000,
+        max_calls: int = 40,
+        max_total_tokens: int = 400_000,
         max_consecutive_errors: int = 3,
     ) -> None:
         self._transport = transport
@@ -137,14 +137,23 @@ class LLMClient:
                     no_think=os.environ.get("AGENT_LLM_NO_THINK", "").strip() in ("1", "true", "yes"),
                 ),
                 model=model,
-                # Real cost, not call/token count, is the actual constraint (team's shared daily
-                # budget — see docs/INFRASTRUCTURE.md): this project's own 3h real runs cost
-                # ~₽9-14 for 13-27 calls, nowhere near a 600₽/day budget. The old defaults (40
-                # calls, 400k tokens) could themselves become the binding limit over a long run
-                # well before real money mattered — raised generously; a genuinely runaway loop
-                # is still bounded by the wall-clock deadline regardless of these caps.
-                max_calls=_env_int("AGENT_LLM_MAX_CALLS", 300),
-                max_total_tokens=_env_int("AGENT_LLM_MAX_TOKENS", 3_000_000),
+                # Real money is nowhere near the binding constraint (team's shared daily budget —
+                # see docs/INFRASTRUCTURE.md): 3h real runs cost ~₽9-14 for 13-27 calls, far under
+                # 600₽/day. Raising these caps to 300/3M (2026-10-24) was tried and made a real
+                # submission score *worse* (779.898 -> 576.77, same elapsed time): once a disable
+                # stopped being permanent (see agent/research.py's _disable_llm), a high call cap
+                # let the LLM keep reclaiming ~25% of every round for the rest of a 3h run instead
+                # of yielding the back half to local-search, which this project's own profiling
+                # found still finds real late-game gains (43.98 -> 43.82 RMSE in a run's last ~10
+                # rounds — see ResearchSettings.max_rounds's comment). Reverted to the original
+                # caps: low enough to bind well before a run ends, so the LLM gets one early
+                # exploration window and then reliably yields the rest of the budget to local
+                # search, same as the run that scored 779.898. The cooldown fix itself (a transient
+                # disable — a run of errors, a few bad answers — recovers instead of disabling for
+                # good) stays: it's what stops one bad early patch from losing the LLM for a whole
+                # run, without needing a high cap to do it.
+                max_calls=_env_int("AGENT_LLM_MAX_CALLS", 40),
+                max_total_tokens=_env_int("AGENT_LLM_MAX_TOKENS", 400_000),
             )
         except Exception:
             return None
