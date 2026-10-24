@@ -24,6 +24,22 @@ def number(name, default, minimum, maximum):
     return value
 
 
+def merged_pythonpath(existing, runtime):
+    """Prepend `runtime` to the child process's PYTHONPATH — never replace it outright.
+
+    Real incident (organizers, 2026-10-24): this used to be a plain `env["PYTHONPATH"] =
+    str(runtime)`, which overwrote whatever PYTHONPATH the platform had already set for this
+    process — on their platform, that pointed at a pre-installed .vendor directory with
+    openai/httpx/etc. The child process could then no longer find those packages at all, so
+    every LLM call failed before it could even construct a client — not a network/credentials
+    problem, a straightforwardly missing import. Prepending instead keeps our own runtime
+    importable first (so agent/ml_core still win any name collision — see child_main()'s own
+    sys.modules eviction) while leaving the platform's own path entries intact for the child to
+    inherit, exactly like sys.path.insert() already does for this (parent) process.
+    """
+    return os.pathsep.join(filter(None, [str(runtime), existing]))
+
+
 def install_runtime(work):
     # Only our build-generated, digest-checked Python sources are unpacked.
     from bundle_sources import SOURCES, SOURCE_SHA256
@@ -276,7 +292,7 @@ def main():
     env.update(AGENT_N_JOBS=str(jobs), PYTHONUNBUFFERED="1")
     env["MPLCONFIGDIR"] = str(work / "matplotlib")
     env["XDG_CACHE_HOME"] = str(work / "cache")
-    env["PYTHONPATH"] = str(runtime)
+    env["PYTHONPATH"] = merged_pythonpath(env.get("PYTHONPATH"), runtime)
     registry = work / (runtime.name + "_processes.jsonl")
     env["INFRA_PROCESS_REGISTRY"] = str(registry)
     command = [sys.executable, "-u", str(Path(__file__).resolve()), str(task), "--infra-child",

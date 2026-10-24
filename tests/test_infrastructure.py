@@ -214,6 +214,24 @@ def test_final_check_rejects_bad_submission(packaged, csv_text):
         entry.check_submission(task / "task.md", task / "submission.csv")
 
 
+def test_child_pythonpath_prepends_instead_of_replacing():
+    """Real incident (organizers, 2026-10-24): main() used to do env["PYTHONPATH"] = str(runtime),
+    which wiped out whatever PYTHONPATH the platform had already set for this process — on their
+    platform, that pointed at a pre-installed .vendor directory with openai/httpx/etc., so the
+    child process could no longer import openai at all and every LLM call failed before it could
+    even construct a client. merged_pythonpath() must keep any existing entries, not discard them."""
+    entry_spec = importlib.util.spec_from_file_location("infra_entry_pythonpath", ROOT / "infra/solution.py")
+    entry = importlib.util.module_from_spec(entry_spec)
+    entry_spec.loader.exec_module(entry)
+
+    runtime = Path("/some/runtime_abc123")
+    vendor = os.pathsep.join(["/platform/.vendor", "/platform/other"])
+
+    assert entry.merged_pythonpath(vendor, runtime) == os.pathsep.join([str(runtime), vendor])
+    assert entry.merged_pythonpath(None, runtime) == str(runtime)  # no prior PYTHONPATH: no stray separator
+    assert entry.merged_pythonpath("", runtime) == str(runtime)
+
+
 def test_child_main_still_calls_run_research_if_cpu_pinning_is_denied(tmp_path, monkeypatch):
     """Real incident: a hardened multi-tenant sandbox denied os.sched_setaffinity (the Python
     binding exists, hasattr is true, but the syscall itself raised) at a point in child_main()
