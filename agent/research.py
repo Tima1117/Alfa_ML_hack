@@ -248,12 +248,26 @@ class _Researcher:
 
     def _estimate_run_s(self, model_name: str, hyper: dict) -> float:
         def ratio_to(ref: ExperimentResult) -> float:
-            ratio = 1.0
+            # How much slower (>1) or faster (<1) `hyper` should run relative to `ref`, based on
+            # iteration-like hyperparameters. Floored at 0.25, not 1.0: a real reduction in
+            # n_estimators/iterations really does run faster, and _run_config's own executor
+            # timeout (timeout_s=min(available, max_experiment_s)) already bounds the downside of
+            # a wrong guess — a mis-estimate can cost at most the time that was going to be spent
+            # anyway. Flooring at 1.0 instead made every local-search tune that reduced iterations
+            # look exactly as expensive as the single slowest historical run of that model, so once
+            # remaining time dropped below that one duration, nothing could ever look cheap enough
+            # to try again — confirmed on a real local run, where the tail of a budget spent
+            # hundreds of rounds generating and instantly skipping "fewer trees" proposals, each
+            # still priced at the old estimate, instead of actually trying any of them. The 0.25
+            # floor keeps some margin for fixed per-fit overhead (data load, fold setup) that
+            # doesn't shrink with iteration count.
+            ratio = None
             for key in _ITERATION_KEYS:
                 new, old = hyper.get(key), ref.config.hyperparameters.get(key)
                 if isinstance(new, (int, float)) and isinstance(old, (int, float)) and old > 0:
-                    ratio = max(ratio, new / old)
-            return ratio
+                    r = new / old
+                    ratio = r if ratio is None else max(ratio, r)
+            return max(ratio, 0.25) if ratio is not None else 1.0
 
         same = [r for r in self.results if r.config.model_name == model_name]
         finished = [r for r in same if r.n_folds_completed > 0]
@@ -672,10 +686,19 @@ class _Researcher:
                     leave_llm(f"{stale} LLM rounds without a new best; switching to the generic playbook")
             elif source != "llm":
                 rest -= 1
-            if round_no % 20 == 0 and not self.out_of_time:
+            if round_no % 10 == 0 and not self.out_of_time:
                 self.try_ensemble(round_no)
             if self.best and time.time() - self.last_refit_ts > self.settings.checkpoint_every_s:
                 self.refit_best("checkpoint")
+
+        # A short run (heavy models, a tight budget) may never reach round 10, in which case the
+        # round%10 trigger above never fires and the ensemble path — otherwise only ever rejected
+        # experiments, never actually run — would go completely untested on a real submission.
+        # One guaranteed attempt here costs nothing it wouldn't already cost at round 10/20/...,
+        # and try_ensemble/_run_config's own checks (2+ distinct results, time remaining) make it
+        # a no-op when there is nothing to gain.
+        if not self.out_of_time:
+            self.try_ensemble(self.report.rounds)
 
     # ------------------------------------------------------------- phase 4
     def finish(self) -> None:
