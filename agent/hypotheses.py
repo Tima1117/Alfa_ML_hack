@@ -224,19 +224,6 @@ def playbook_hypotheses(task_spec: TaskSpec, profile: DataProfile, drop_candidat
                    hyperparameters={"n_estimators": 800, "learning_rate": 0.05, "max_depth": 8, "subsample": 0.8,
                                     "colsample_bytree": 0.8, "min_child_weight": 2, "max_cat_threshold": 32},
                    rationale="different tree-growing strategy, sometimes better"),
-        # Everything else in this playbook is a boosted tree from the same family of libraries
-        # (CatBoost/LightGBM/XGBoost) — the two below are the only genuinely different model
-        # shapes in ml_core/model_registry.py (sklearn's own histogram boosting, and a bagging
-        # forest instead of boosting at all). Neither is expected to beat the tuned boosters on
-        # its own; the point is giving try_ensemble() (agent/research.py) a more different model
-        # to vote with, since averaging similar models buys little.
-        Hypothesis(title="HistGradientBoosting", kind="model", model_name="hist_gradient_boosting",
-                   hyperparameters={"max_iter": 500, "learning_rate": 0.08, "max_leaf_nodes": 63,
-                                    "l2_regularization": 0.1},
-                   rationale="sklearn's own boosting implementation — a different model family for the ensemble"),
-        Hypothesis(title="Random Forest", kind="model", model_name="random_forest",
-                   hyperparameters={"n_estimators": 500, "min_samples_leaf": 2},
-                   rationale="bagging, not boosting — the most different model in the playbook, mainly useful as ensemble diversity"),
         Hypothesis(title="CatBoost deeper", kind="params", model_name="catboost",
                    hyperparameters={"iterations": 1200, "learning_rate": 0.06, "depth": 8},
                    rationale="more interactions between features"),
@@ -244,6 +231,23 @@ def playbook_hypotheses(task_spec: TaskSpec, profile: DataProfile, drop_candidat
                    hyperparameters={"n_estimators": 1000, "learning_rate": 0.04, "num_leaves": 127, "subsample": 0.8,
                                     "subsample_freq": 1, "colsample_bytree": 0.7, "min_child_samples": 10},
                    rationale="larger trees for a large dataset"),
+        # Everything above is a boosted tree from the same family of libraries (CatBoost/
+        # LightGBM/XGBoost) — the two below are the only genuinely different model shapes in
+        # ml_core/model_registry.py (sklearn's own histogram boosting, and a bagging forest
+        # instead of boosting at all), mainly useful as ensemble diversity for try_ensemble()
+        # (agent/research.py). Deliberately placed last, not right after XGBoost: a real
+        # submission (commit 6b0b847, score 772.865 vs. the prior best 942.698) regressed when
+        # they ran this early in the queue, displacing the already-proven CatBoost deeper/
+        # LightGBM bigger leaves ideas above under the same real time budget — a hard-budgeted
+        # playbook isn't free to extend, every addition has an opportunity cost. Here they only
+        # run with time to spare, after the ideas already known to help.
+        Hypothesis(title="HistGradientBoosting", kind="model", model_name="hist_gradient_boosting",
+                   hyperparameters={"max_iter": 500, "learning_rate": 0.08, "max_leaf_nodes": 63,
+                                    "l2_regularization": 0.1},
+                   rationale="sklearn's own boosting implementation — a different model family for the ensemble"),
+        Hypothesis(title="Random Forest", kind="model", model_name="random_forest",
+                   hyperparameters={"n_estimators": 500, "min_samples_leaf": 2},
+                   rationale="bagging, not boosting — the most different model in the playbook, mainly useful as ensemble diversity"),
     ]
     ideas += [
         Hypothesis(title=f"drop {col}", kind="features", add_feature_steps=[f"drop:{col}"],
