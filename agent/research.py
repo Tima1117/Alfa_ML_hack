@@ -220,6 +220,7 @@ class _Researcher:
         self.ctx: ExperimentContext | None = None
         self.task_spec: TaskSpec | None = None
         self.out_of_time = False
+        self._llm_asked_before = False
 
     # ------------------------------------------------------------------ utils
     def log(self, msg: str) -> None:
@@ -598,6 +599,7 @@ class _Researcher:
         assert self.llm is not None and self.ctx is not None and self.task_spec is not None
         history = context.describe_history(self.results, self.titles, self.task_spec.greater_is_better)
         best_json = json.dumps(context.compact_config(self.best.config), ensure_ascii=False) if self.best else "none yet"
+        first_round = not self._llm_asked_before
         user = prompts.research_user(
             data_brief=self.data_brief,
             validation_brief=self.validation_brief,
@@ -607,8 +609,10 @@ class _Researcher:
             notes=self.notes,
             minutes_left=max(0.0, (self.remaining() - self._reserve_s()) / 60),
             n_hypotheses=self.settings.hypotheses_per_round,
+            first_round=first_round,
         )
         batch = self.llm.complete_json(prompts.RESEARCH_SYSTEM, user, HypothesisBatch, purpose=f"round {round_no}")
+        self._llm_asked_before = True  # the diversity nudge above was consumed by this answer
         if batch.analysis:
             self.notes.append(f"round {round_no} analysis: {batch.analysis[:500]}")
             self.log(f"LLM analysis: {batch.analysis[:500]}")

@@ -113,6 +113,33 @@ def test_fallback_submission_is_refreshed_for_a_probability_metric_decided_only_
     assert values.between(0, 1).all()
 
 
+def test_first_llm_round_gets_the_diversity_nudge_but_later_rounds_do_not(regression_dataset, tmp_path):
+    """agent/prompts.py's research_user(first_round=...): only the very first hypothesis-generation
+    call should carry the "propose 2 different strategies" nudge, even if that first call itself
+    returns stop=True with no hypotheses (round 1 here) — a later call (round 2, after the
+    cooldown/"back to LLM" cycle) must not repeat it."""
+    stop = json.dumps({"analysis": "nothing yet", "hypotheses": [], "stop": True})
+    seen_user_messages: list[str] = []
+
+    def transport(messages):
+        user_msg = messages[-1]["content"]
+        if "Time left for experiments" in user_msg:  # a research round, not the "understanding" call
+            seen_user_messages.append(user_msg)
+        prompt = sum(len(m["content"]) for m in messages) // 4
+        return stop, prompt, len(stop) // 4
+
+    llm = LLMClient(transport, model="scripted")
+    settings = _settings()
+    settings.max_rounds, settings.llm_rest_rounds = 2, 1  # round 1: LLM stops -> playbook; round 2: LLM again
+    report = run_research(_task_md(regression_dataset, "RMSE"), time.time() + 300,
+                           llm=llm, work_dir=tmp_path / "work", settings=settings)
+
+    assert report.status == "ok", report.error
+    assert len(seen_user_messages) == 2
+    assert "FIRST round" in seen_user_messages[0]
+    assert "FIRST round" not in seen_user_messages[1]
+
+
 def test_llm_gets_another_turn_after_the_playbook(regression_dataset, tmp_path):
     task_md = _task_md(regression_dataset, "RMSE")
     stop = json.dumps({"analysis": "nothing to add", "hypotheses": [], "stop": True})
